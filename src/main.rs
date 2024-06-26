@@ -3,8 +3,11 @@ use eyre::{Context, Result};
 
 use clap::Parser;
 use mmap_vec::MmapVec;
-use solana_client::rpc_client::RpcClient;
+use solana_client::{rpc_client::RpcClient, rpc_config::RpcBlockConfig};
 use solana_sdk::commitment_config::CommitmentConfig;
+
+const EXPECTED_BLOCK_COUNT: usize = 128;
+const EXPECTED_TXS_PER_BLOCK: usize = 1645; // experimentally obatined from a 10 block sample
 
 const ENDPOINT: &'static str = "https://api.devnet.solana.com";
 //const ENDPOINT: &'static str = "https://api.mainnet-beta.solana.com";
@@ -18,7 +21,7 @@ struct App {
 }
 
 #[repr(C, packed)]
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct TxRecord {
     block_id: u64,
     fee: u64,
@@ -26,7 +29,7 @@ struct TxRecord {
 }
 
 #[repr(C, packed)]
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct BlockRecord {
     block_id: u64,
     ts: i64,
@@ -66,7 +69,9 @@ fn main() -> Result<()> {
 
     let db2 = Arc::clone(&db);
     ctrlc::set_handler(move || {
+        println!("saving db...");
         db2.lock().unwrap().sync().unwrap();
+        println!("db saved, exiting");
         std::process::exit(0);
     }).wrap_err("could not set Ctrl+C handler")?;
 
@@ -77,24 +82,32 @@ fn main() -> Result<()> {
     });
 
     std::thread::sleep(Duration::from_millis(500)); // ensure we respect rate limits
+
+    let mut block_config = RpcBlockConfig::default();
+    block_config.max_supported_transaction_version = Some(0);
+    let block_config = block_config;
     for block_num in (0..next_block).rev() {
-        let block = client.get_block(block_num).wrap_err("failed to fetch next block")?;
+        let block = client.get_block_with_config(block_num, block_config).wrap_err("failed to fetch next block")?;
 
         {
             let mut d = db.lock().unwrap();
+            let txs = block.transactions.unwrap_or(Vec::new());
+
             let block_rec = BlockRecord {
                 block_id: block_num,
                 ts: block.block_time.unwrap_or(i64::MAX),
-                tx_count: block.transactions.len() as u64,
+                tx_count: txs.len() as u64,
             };
+            dbg!(&block_rec);
 
-            for tx in block.transactions {
+            for tx in txs {
                 let tx_rec = TxRecord {
                     block_id: block_num,
                     fee: tx.meta.as_ref().map(|m| m.fee).unwrap_or(u64::MAX),
                     compute_units: tx.meta.as_ref().map(|m| m.compute_units_consumed.clone().unwrap_or(u64::MAX)).unwrap_or(u64::MAX),
                 };
 
+                dbg!(&tx_rec);
                 d.txs.push(tx_rec).wrap_err("could not save tx")?;
             }
             d.blocks.push(block_rec).wrap_err("could not save block")?;
@@ -129,10 +142,10 @@ impl Drop for Db {
 fn open_db(db_root_path: PathBuf) -> Result<Db> {
     std::fs::create_dir_all(&db_root_path).wrap_err("Failed to create DB dir")?;
 
-    let blocks = unsafe { MmapVec::with_name(db_root_path.join("blocks")) }
+    let blocks = unsafe { MmapVec::with_name(db_root_path.join("blocks"), EXPECTED_BLOCK_COUNT) }
         .wrap_err("Failed to open blocks table")?;
 
-    let txs = unsafe { MmapVec::with_name(db_root_path.join("txs")) }
+    let txs = unsafe { MmapVec::with_name(db_root_path.join("txs"), EXPECTED_BLOCK_COUNT * EXPECTED_TXS_PER_BLOCK) }
         .wrap_err("Failed to open txs table")?;
 
     Ok(Db {blocks, txs})

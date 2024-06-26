@@ -94,6 +94,7 @@ impl<T> Segment<T> {
         let meta_path = path.as_ref().with_extension("meta");
         let mut meta_file = OpenOptions::new()
             .read(true)
+            .write(true)
             .create(true)
             .open(&meta_path)?;
 
@@ -117,6 +118,7 @@ impl<T> Segment<T> {
         }?;
 
         let mut res = Self::open_rw(path, existing_metadata.capacity as usize)?;
+        dbg!(&existing_metadata);
         res.meta = existing_metadata;
         res.meta_path = Some(meta_path);
         Ok(res)

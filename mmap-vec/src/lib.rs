@@ -170,11 +170,11 @@ where
     }
 
     /// Create a zero size mmap vec.
-    pub unsafe fn with_name(path: PathBuf) -> io::Result<Self> {
+    pub unsafe fn with_name(path: PathBuf, cap: usize) -> io::Result<Self> {
         check_zst::<T>();
 
         Ok(Self {
-            segment: Segment::open_rw_existing(path.clone(), 0)?,
+            segment: Segment::open_rw_existing(path.clone(), cap)?,
             builder: B::default(),
             path,
         })
