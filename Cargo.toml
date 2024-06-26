@@ -12,4 +12,5 @@ ctrlc = "3.4.4"
 eyre = "0.6.12"
 mmap-vec = { path = "./mmap-vec"}
 solana-client = "2.0.1"
+solana-rpc-client-api = "2.0.1"
 solana-sdk = "2.0.1"

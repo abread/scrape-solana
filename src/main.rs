@@ -1,9 +1,18 @@
-use std::{path::{Path, PathBuf}, sync::{Arc, Mutex}, time::Duration};
 use eyre::{Context, Result};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
 use mmap_vec::MmapVec;
-use solana_client::{rpc_client::RpcClient, rpc_config::RpcBlockConfig};
+use solana_client::{
+    client_error::{ClientError, ClientErrorKind},
+    rpc_client::RpcClient,
+    rpc_config::RpcBlockConfig,
+    rpc_request::RpcError,
+};
 use solana_sdk::commitment_config::CommitmentConfig;
 
 const EXPECTED_BLOCK_COUNT: usize = 128;
@@ -49,7 +58,9 @@ fn main() -> Result<()> {
     let next_block = if let Some(b) = db.blocks.last() {
         b.block_id - 1
     } else {
-        client.get_block_height().wrap_err("failed to get latest blocknum")?
+        client
+            .get_block_height()
+            .wrap_err("failed to get latest blocknum")?
     };
 
     // cleanup semi-fetched txs
@@ -58,7 +69,7 @@ fn main() -> Result<()> {
         if db.txs[i].block_id == next_block {
             trunc_idx = i;
         } else {
-            break
+            break;
         }
     }
     if trunc_idx != db.txs.len() {
@@ -73,7 +84,8 @@ fn main() -> Result<()> {
         db2.lock().unwrap().sync().unwrap();
         println!("db saved, exiting");
         std::process::exit(0);
-    }).wrap_err("could not set Ctrl+C handler")?;
+    })
+    .wrap_err("could not set Ctrl+C handler")?;
 
     let db2 = Arc::clone(&db);
     std::thread::spawn(move || {
@@ -87,7 +99,20 @@ fn main() -> Result<()> {
     block_config.max_supported_transaction_version = Some(0);
     let block_config = block_config;
     for block_num in (0..next_block).rev() {
-        let block = client.get_block_with_config(block_num, block_config).wrap_err("failed to fetch next block")?;
+        let block = match client.get_block_with_config(block_num, block_config) {
+            Ok(b) => Ok(b),
+            Err(ClientError {
+                kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32009, .. }),
+                ..
+            }) => {
+                eprintln!("skipped block {block_num}");
+                continue;
+            }
+            Err(e) => Err(e),
+        }
+        .wrap_err("failed to fetch next block")?;
+
+        let now = Instant::now();
 
         {
             let mut d = db.lock().unwrap();
@@ -98,38 +123,36 @@ fn main() -> Result<()> {
                 ts: block.block_time.unwrap_or(i64::MAX),
                 tx_count: txs.len() as u64,
             };
-            dbg!(&block_rec);
 
             for tx in txs {
                 let tx_rec = TxRecord {
                     block_id: block_num,
                     fee: tx.meta.as_ref().map(|m| m.fee).unwrap_or(u64::MAX),
-                    compute_units: tx.meta.as_ref().map(|m| m.compute_units_consumed.clone().unwrap_or(u64::MAX)).unwrap_or(u64::MAX),
+                    compute_units: tx
+                        .meta
+                        .as_ref()
+                        .map(|m| m.compute_units_consumed.clone().unwrap_or(u64::MAX))
+                        .unwrap_or(u64::MAX),
                 };
 
-                dbg!(&tx_rec);
                 d.txs.push(tx_rec).wrap_err("could not save tx")?;
             }
             d.blocks.push(block_rec).wrap_err("could not save block")?;
         }
 
-        println!("fetched block {block_num}");
-        std::thread::sleep(Duration::from_millis(500));
+        let now2 = Instant::now();
+        println!("fetched and saved block {block_num}");
+        std::thread::sleep(Duration::from_millis(500) - (now2-now).min(Duration::from_millis(500)));
     }
 
     Ok(())
 }
-
 
 impl Db {
     fn sync(&mut self) -> Result<()> {
         self.txs.sync().wrap_err("could not sync txs table")?;
         self.blocks.sync().wrap_err("could not sync blocks table")?;
         Ok(())
-    }
-
-    fn is_empty(&self) -> bool {
-        self.blocks.is_empty()
     }
 }
 
@@ -145,8 +168,13 @@ fn open_db(db_root_path: PathBuf) -> Result<Db> {
     let blocks = unsafe { MmapVec::with_name(db_root_path.join("blocks"), EXPECTED_BLOCK_COUNT) }
         .wrap_err("Failed to open blocks table")?;
 
-    let txs = unsafe { MmapVec::with_name(db_root_path.join("txs"), EXPECTED_BLOCK_COUNT * EXPECTED_TXS_PER_BLOCK) }
-        .wrap_err("Failed to open txs table")?;
+    let txs = unsafe {
+        MmapVec::with_name(
+            db_root_path.join("txs"),
+            EXPECTED_BLOCK_COUNT * EXPECTED_TXS_PER_BLOCK,
+        )
+    }
+    .wrap_err("Failed to open txs table")?;
 
-    Ok(Db {blocks, txs})
+    Ok(Db { blocks, txs })
 }

@@ -2903,6 +2903,7 @@ dependencies = [
  "eyre",
  "mmap-vec",
  "solana-client",
+ "solana-rpc-client-api",
  "solana-sdk",
 ]
 
