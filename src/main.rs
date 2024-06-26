@@ -100,7 +100,7 @@ fn main() -> Result<()> {
             d.blocks.push(block_rec).wrap_err("could not save block")?;
         }
 
-        println!("fetched block {blocknum}")
+        println!("fetched block {block_num}");
         std::thread::sleep(Duration::from_millis(500));
     }
 
