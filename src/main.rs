@@ -149,6 +149,7 @@ fn main() -> Result<()> {
     block_config.max_supported_transaction_version = Some(0);
     let block_config = block_config;
 
+    const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
     for block_num in (0..next_block).rev().step_by(args.shard_config.n as usize) {
         let mut larger_timeout = Duration::from_secs(1);
         let block = loop {
@@ -181,8 +182,7 @@ fn main() -> Result<()> {
             Err(e) => return Err(e).wrap_err("failed to fetch next block"),
         };
 
-        let now = Instant::now();
-
+        let save_start = Instant::now();
         {
             let mut d = db.lock().unwrap();
             let txs = block.transactions.unwrap_or(Vec::new());
@@ -208,11 +208,11 @@ fn main() -> Result<()> {
             }
             d.blocks.push(block_rec).wrap_err("could not save block")?;
         }
+        let save_dur = Instant::now().duration_since(save_start);
 
-        let now2 = Instant::now();
         println!("fetched and saved block {block_num}");
         std::thread::sleep(
-            Duration::from_millis(500) - (now2 - now).min(Duration::from_millis(500)),
+            MIN_WAIT - save_dur.min(MIN_WAIT),
         );
     }
 
