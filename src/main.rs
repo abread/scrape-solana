@@ -1,12 +1,15 @@
-use eyre::{Context, Result, eyre};
+use eyre::{eyre, Context, Result};
 use std::{
-    path::PathBuf, str::FromStr, sync::{Arc, Mutex}, time::{Duration, Instant}
+    path::PathBuf,
+    str::FromStr,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use clap::Parser;
 use mmap_vec::MmapVec;
 use solana_client::{
-    client_error::{reqwest::Url, ClientError, ClientErrorKind},
+    client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
     rpc_config::RpcBlockConfig,
     rpc_request::RpcError,
@@ -40,19 +43,25 @@ struct ShardConfig {
 impl FromStr for ShardConfig {
     type Err = eyre::Error;
     fn from_str(s: &str) -> eyre::Result<Self> {
-        let (n, id) = s.split_once(':').ok_or_else(|| eyre!("shard config missing delimiter ':'"))?;
+        let (n, id) = s
+            .split_once(':')
+            .ok_or_else(|| eyre!("shard config missing delimiter ':'"))?;
 
-        let n = n.parse::<u64>().wrap_err("invalid shard config: field n must be a positive integer")?;
-        let id = id.parse::<u64>().wrap_err("invalid shard config: field id must be a non-negative integer smaller than n")?;
+        let n = n
+            .parse::<u64>()
+            .wrap_err("invalid shard config: field n must be a positive integer")?;
+        let id = id.parse::<u64>().wrap_err(
+            "invalid shard config: field id must be a non-negative integer smaller than n",
+        )?;
 
         if n == 0 {
-            Err(eyre!("invalid shard config: field n must be a positive integer"))
+            Err(eyre!(
+                "invalid shard config: field n must be a positive integer"
+            ))
         } else if id >= n {
             Err(eyre!("invalid shard config: field id must be 0 <= id < n"))
         } else {
-            Ok(ShardConfig{
-                n, id
-            })
+            Ok(ShardConfig { n, id })
         }
     }
 }
@@ -107,7 +116,12 @@ fn main() -> Result<()> {
         }
     };
 
-    assert!(next_block % args.shard_config.n == args.shard_config.id, "mismatch between last stored block and shard configuration. expected shard id {}, got {}", args.shard_config.id, next_block % args.shard_config.n);
+    assert!(
+        next_block % args.shard_config.n == args.shard_config.id,
+        "mismatch between last stored block and shard configuration. expected shard id {}, got {}",
+        args.shard_config.id,
+        next_block % args.shard_config.n
+    );
 
     // cleanup semi-fetched txs
     let mut trunc_idx = db.txs.len() - 1;
@@ -211,9 +225,7 @@ fn main() -> Result<()> {
         let save_dur = Instant::now().duration_since(save_start);
 
         println!("fetched and saved block {block_num}");
-        std::thread::sleep(
-            MIN_WAIT - save_dur.min(MIN_WAIT),
-        );
+        std::thread::sleep(MIN_WAIT - save_dur.min(MIN_WAIT));
     }
 
     Ok(())
