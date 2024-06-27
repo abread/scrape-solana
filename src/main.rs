@@ -184,7 +184,12 @@ impl Db {
 
 impl Drop for Db {
     fn drop(&mut self) {
-        self.sync().unwrap();
+        std::mem::replace(&mut self.txs, MmapVec::new())
+            .persist()
+            .expect("could not persist txs");
+        std::mem::replace(&mut self.blocks, MmapVec::new())
+            .persist()
+            .expect("could not persist blocks");
     }
 }
 
