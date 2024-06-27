@@ -150,7 +150,7 @@ fn main() -> Result<()> {
     let block_config = block_config;
 
     for block_num in (0..next_block).rev().step_by(args.shard_config.n as usize) {
-        let mut larger_timeout = Duration::from_millis(500);
+        let mut larger_timeout = Duration::from_secs(1);
         let block = loop {
             match client.get_block_with_config(block_num, block_config) {
                 Ok(b) => break Ok(b),
@@ -158,7 +158,7 @@ fn main() -> Result<()> {
                     kind: ClientErrorKind::Reqwest(e),
                     ..
                 }) if e.is_timeout() => {
-                    eprintln!("block #{block_num} fetch timeout, retrying");
+                    eprintln!("block #{block_num} fetch timeout, retrying in {larger_timeout:#?}");
                     std::thread::sleep(larger_timeout);
                     larger_timeout *= 2;
                     continue;
