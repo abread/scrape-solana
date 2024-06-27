@@ -42,8 +42,8 @@ impl FromStr for ShardConfig {
     fn from_str(s: &str) -> eyre::Result<Self> {
         let (n, id) = s.split_once(':').ok_or_else(|| eyre!("shard config missing delimiter ':'"))?;
 
-        let n = n.parse::<usize>().wrap_err("invalid shard config: field n must be a positive integer")?;
-        let id = id.parse::<usize>().wrap_err("invalid shard config: field id must be a non-negative integer smaller than n")?;
+        let n = n.parse::<u64>().wrap_err("invalid shard config: field n must be a positive integer")?;
+        let id = id.parse::<u64>().wrap_err("invalid shard config: field id must be a non-negative integer smaller than n")?;
 
         if n == 0 {
             Err(eyre!("invalid shard config: field n must be a positive integer"))
