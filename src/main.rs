@@ -107,6 +107,7 @@ fn main() -> Result<()> {
         let b = client
             .get_block_height()
             .wrap_err("failed to get latest blocknum")?;
+        println!("latest block is {b}");
 
         let b_shard = b % args.shard_config.n;
         if b_shard != args.shard_config.id {
@@ -164,7 +165,7 @@ fn main() -> Result<()> {
     let block_config = block_config;
 
     const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
-    for block_num in (0..next_block).rev().step_by(args.shard_config.n as usize) {
+    for block_num in (0..=next_block).rev().step_by(args.shard_config.n as usize) {
         let mut larger_timeout = Duration::from_secs(1);
         let block = loop {
             match client.get_block_with_config(block_num, block_config) {
