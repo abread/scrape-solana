@@ -1,8 +1,6 @@
-use eyre::{Context, Result};
+use eyre::{Context, Result, eyre};
 use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    path::PathBuf, str::FromStr, sync::{Arc, Mutex}, time::{Duration, Instant}
 };
 
 use clap::Parser;
@@ -22,12 +20,41 @@ const EXPECTED_TXS_PER_BLOCK: usize = 1645; // experimentally obatined from a 10
 #[command(name = "scape-solana", version, about, long_about = None)]
 struct App {
     /// Database file path
-    #[arg(short, long, default_value = "solana_data_db")]
+    #[arg(short = 'r', long, default_value = "solana_data_db")]
     db_root_path: PathBuf,
 
     /// Solana API Endpoint (can be mainnet-beta, devnet, testnet or the URL for another endpoint)
-    #[arg(short, long, default_value = "devnet")]
+    #[arg(short = 'u', long, default_value = "devnet")]
     endpoint_url: String,
+
+    /// Sharded fetching (format: N:id where id is between 0 and N-1). Node id fetches blocks where blocknum % N = id
+    #[arg(short, long, default_value = "1:0")]
+    shard_config: ShardConfig,
+}
+
+#[derive(Clone, Debug)]
+struct ShardConfig {
+    n: u64,
+    id: u64,
+}
+impl FromStr for ShardConfig {
+    type Err = eyre::Error;
+    fn from_str(s: &str) -> eyre::Result<Self> {
+        let (n, id) = s.split_once(':').ok_or_else(|| eyre!("shard config missing delimiter ':'"))?;
+
+        let n = n.parse::<usize>().wrap_err("invalid shard config: field n must be a positive integer")?;
+        let id = id.parse::<usize>().wrap_err("invalid shard config: field id must be a non-negative integer smaller than n")?;
+
+        if n == 0 {
+            Err(eyre!("invalid shard config: field n must be a positive integer"))
+        } else if id >= n {
+            Err(eyre!("invalid shard config: field id must be 0 <= id < n"))
+        } else {
+            Ok(ShardConfig{
+                n, id
+            })
+        }
+    }
 }
 
 #[repr(C, packed)]
@@ -65,13 +92,22 @@ fn main() -> Result<()> {
 
     let client = RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
     let next_block = if let Some(b) = db.blocks.last() {
-        b.block_id.saturating_sub(1)
+        b.block_id.saturating_sub(args.shard_config.n)
     } else {
         println!("empty dataset: fetching latest blocknum");
-        client
+        let b = client
             .get_block_height()
-            .wrap_err("failed to get latest blocknum")?
+            .wrap_err("failed to get latest blocknum")?;
+
+        let b_shard = b % args.shard_config.n;
+        if b_shard != args.shard_config.id {
+            b.saturating_sub(b_shard + args.shard_config.n - args.shard_config.id)
+        } else {
+            b
+        }
     };
+
+    assert!(next_block % args.shard_config.n == args.shard_config.id, "mismatch between last stored block and shard configuration. expected shard id {}, got {}", args.shard_config.id, next_block % args.shard_config.n);
 
     // cleanup semi-fetched txs
     let mut trunc_idx = db.txs.len() - 1;
@@ -112,7 +148,8 @@ fn main() -> Result<()> {
     let mut block_config = RpcBlockConfig::default();
     block_config.max_supported_transaction_version = Some(0);
     let block_config = block_config;
-    for block_num in (0..next_block).rev() {
+
+    for block_num in (0..next_block).rev().step_by(args.shard_config.n as usize) {
         let mut larger_timeout = Duration::from_millis(500);
         let block = loop {
             match client.get_block_with_config(block_num, block_config) {
