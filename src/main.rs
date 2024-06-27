@@ -8,7 +8,7 @@ use std::{
 use clap::Parser;
 use mmap_vec::MmapVec;
 use solana_client::{
-    client_error::{ClientError, ClientErrorKind},
+    client_error::{reqwest::Url, ClientError, ClientErrorKind},
     rpc_client::RpcClient,
     rpc_config::RpcBlockConfig,
     rpc_request::RpcError,
@@ -18,15 +18,16 @@ use solana_sdk::commitment_config::CommitmentConfig;
 const EXPECTED_BLOCK_COUNT: usize = 128;
 const EXPECTED_TXS_PER_BLOCK: usize = 1645; // experimentally obatined from a 10 block sample
 
-const ENDPOINT: &'static str = "https://api.devnet.solana.com";
-//const ENDPOINT: &'static str = "https://api.mainnet-beta.solana.com";
-
 #[derive(clap::Parser)]
 #[command(name = "scape-solana", version, about, long_about = None)]
 struct App {
     /// Database file path
     #[arg(short, long, default_value = "solana_data_db")]
     db_root_path: PathBuf,
+
+    /// Solana API Endpoint (can be mainnet-beta, devnet, testnet or the URL for another endpoint)
+    #[arg(short, long, default_value = "devnet")]
+    endpoint_url: String,
 }
 
 #[repr(C, packed)]
@@ -55,7 +56,14 @@ fn main() -> Result<()> {
     let args = App::parse();
     let mut db = open_db(args.db_root_path).wrap_err("failed to open db")?;
 
-    let client = RpcClient::new_with_commitment(ENDPOINT, CommitmentConfig::finalized());
+    let endpoint_url = match args.endpoint_url.as_ref() {
+        "devnet" => "https://api.devnet.solana.com",
+        "testnet" => "https://api.testnet.solana.com",
+        "mainnet-beta" => "https://api.mainnet-beta.solana.com",
+        x => x,
+    };
+
+    let client = RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
     let next_block = if let Some(b) = db.blocks.last() {
         b.block_id.saturating_sub(1)
     } else {
@@ -84,7 +92,7 @@ fn main() -> Result<()> {
 
     let db = Arc::new(Mutex::new(db));
 
-    let db2 = Arc::clone(&db);
+    let db2 = Arc::clone(&db); // capture db
     ctrlc::set_handler(move || {
         println!("saving db...");
         db2.lock().unwrap().sync().unwrap();
@@ -93,7 +101,7 @@ fn main() -> Result<()> {
     })
     .wrap_err("could not set Ctrl+C handler")?;
 
-    let db2 = Arc::clone(&db);
+    let db2 = Arc::clone(&db); // capture db
     std::thread::spawn(move || {
         db2.lock().unwrap().sync().unwrap();
         std::thread::sleep(Duration::from_secs(5))
@@ -184,6 +192,10 @@ impl Db {
 
 impl Drop for Db {
     fn drop(&mut self) {
+        // The MmapVec destructor deletes the backing file.
+        // To avoid this, we use the persist method, which calls sync to ensure the vec is written
+        // to disk, and destructs the MmapVec without deleting the backing file.
+
         std::mem::replace(&mut self.txs, MmapVec::new())
             .persist()
             .expect("could not persist txs");
