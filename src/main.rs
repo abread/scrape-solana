@@ -105,18 +105,36 @@ fn main() -> Result<()> {
     block_config.max_supported_transaction_version = Some(0);
     let block_config = block_config;
     for block_num in (0..next_block).rev() {
-        let block = match client.get_block_with_config(block_num, block_config) {
-            Ok(b) => Ok(b),
+        let mut larger_timeout = Duration::from_millis(500);
+        let block = loop {
+            match client.get_block_with_config(block_num, block_config) {
+                Ok(b) => break Ok(b),
+                Err(ClientError {
+                    kind: ClientErrorKind::Reqwest(e),
+                    ..
+                }) if e.is_timeout() => {
+                    eprintln!("block #{block_num} fetch timeout, retrying");
+                    std::thread::sleep(larger_timeout);
+                    larger_timeout *= 2;
+                    continue;
+                }
+                Err(e) => break Err(e),
+            }
+        };
+
+        let block = match block {
+            Ok(b) => b,
             Err(ClientError {
                 kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32009, .. }),
                 ..
             }) => {
-                eprintln!("skipped block {block_num}");
+                eprintln!(
+                    "skipped block {block_num}: not present in Solana nodes nor long-term storage"
+                );
                 continue;
             }
-            Err(e) => Err(e),
-        }
-        .wrap_err("failed to fetch next block")?;
+            Err(e) => return Err(e).wrap_err("failed to fetch next block"),
+        };
 
         let now = Instant::now();
 
