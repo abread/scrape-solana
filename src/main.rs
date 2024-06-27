@@ -45,6 +45,7 @@ struct BlockRecord {
     tx_count: u64,
 }
 
+#[derive(Debug)]
 struct Db {
     blocks: MmapVec<BlockRecord>,
     txs: MmapVec<TxRecord>,
@@ -56,15 +57,16 @@ fn main() -> Result<()> {
 
     let client = RpcClient::new_with_commitment(ENDPOINT, CommitmentConfig::finalized());
     let next_block = if let Some(b) = db.blocks.last() {
-        b.block_id - 1
+        b.block_id.saturating_sub(1)
     } else {
+        println!("empty dataset: fetching latest blocknum");
         client
             .get_block_height()
             .wrap_err("failed to get latest blocknum")?
     };
 
     // cleanup semi-fetched txs
-    let mut trunc_idx = db.txs.len();
+    let mut trunc_idx = db.txs.len() - 1;
     for i in (0..db.txs.len()).rev() {
         if db.txs[i].block_id == next_block {
             trunc_idx = i;
@@ -72,8 +74,12 @@ fn main() -> Result<()> {
             break;
         }
     }
-    if trunc_idx != db.txs.len() {
-        db.txs.truncate(trunc_idx);
+    if (trunc_idx + 1) != db.txs.len() {
+        println!(
+            "dropping {} txs from block {next_block} (possible partial fetch)",
+            db.txs.len() - trunc_idx - 1
+        );
+        db.txs.truncate(trunc_idx + 1);
     }
 
     let db = Arc::new(Mutex::new(db));
@@ -142,7 +148,9 @@ fn main() -> Result<()> {
 
         let now2 = Instant::now();
         println!("fetched and saved block {block_num}");
-        std::thread::sleep(Duration::from_millis(500) - (now2-now).min(Duration::from_millis(500)));
+        std::thread::sleep(
+            Duration::from_millis(500) - (now2 - now).min(Duration::from_millis(500)),
+        );
     }
 
     Ok(())
