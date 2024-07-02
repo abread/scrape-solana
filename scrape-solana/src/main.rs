@@ -5,7 +5,6 @@ use std::{
 };
 
 use clap::Parser;
-use mmap_vec::MmapVec;
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
@@ -13,9 +12,6 @@ use solana_client::{
     rpc_request::RpcError,
 };
 use solana_sdk::commitment_config::CommitmentConfig;
-
-const EXPECTED_BLOCK_COUNT: usize = 128;
-const EXPECTED_TXS_PER_BLOCK: usize = 1645; // experimentally obatined from a 10 block sample
 
 #[derive(clap::Parser)]
 #[command(name = "scape-solana", version, about, long_about = None)]

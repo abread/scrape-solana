@@ -95,8 +95,8 @@ struct MapMetaStorage(File);
 
 #[repr(C)]
 struct MapMetaRaw {
-    root: Option<u32>,
-    free_head: Option<u32>,
+    root: Option<nonmax::NonMaxU64>,
+    free_head: Option<nonmax::NonMaxU64>,
     len: u64,
 }
 
@@ -122,7 +122,7 @@ impl MapMetaStorage {
                 f.read_exact(mutref)
                     .wrap_err("could not read map metadata from file")?;
 
-                drop(mutref);
+                // drop mutref
             }
 
             Ok((MapMetaStorage(f), unsafe { map_meta.assume_init() }))

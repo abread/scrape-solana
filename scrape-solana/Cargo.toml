@@ -7,11 +7,14 @@ edition = "2021"
 
 [dependencies]
 base64 = "0.22.1"
+bincode = "1.3.3"
 clap = { version = "4.5.7", features = ["derive"] }
 color-eyre = "0.6.3"
 ctrlc = "3.4.4"
 eyre = "0.6.12"
 mmap-vec = { path = "../mmap-vec" }
+nonmax = "0.5.5"
+serde = { version = "1.0.203", features = ["derive"] }
 solana-client = "2.0.1"
 solana-sdk = "2.0.1"
 solana-transaction-status = "2.0.1"

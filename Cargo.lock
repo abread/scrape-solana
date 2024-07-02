@@ -2104,6 +2104,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "nonmax"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "610a5acd306ec67f907abe5567859a3c693fb9886eb1f012ab8f2a47bef3db51"
+
+[[package]]
 name = "num"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2915,11 +2921,14 @@ name = "scrape-solana"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bincode",
  "clap 4.5.7",
  "color-eyre",
  "ctrlc",
  "eyre",
  "mmap-vec",
+ "nonmax",
+ "serde",
  "solana-client",
  "solana-sdk",
  "solana-transaction-status",
@@ -4727,6 +4736,7 @@ version = "0.1.0"
 dependencies = [
  "bumpalo",
  "mmap-vec",
+ "nonmax",
  "rand 0.7.3",
  "rand_xorshift",
 ]
