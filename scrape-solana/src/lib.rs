@@ -1,15 +1,17 @@
-use base64::{prelude::BASE64_STANDARD, Engine};
 use eyre::{eyre, Context, OptionExt};
 use mmap_vec::MmapVec;
 use nonmax::NonMaxU64;
 use std::{
-    collections::{BTreeSet, HashSet}, fmt::{Debug, Display}, io, path::PathBuf
+    collections::BTreeSet,
+    fmt::{Debug, Display},
+    io,
+    ops::Range,
+    path::PathBuf,
+    str::FromStr,
 };
 
 use serde::{Deserialize, Serialize};
-use solana_transaction_status::{
-    UiCompiledInstruction, UiConfirmedBlock, UiInstruction, UiParsedInstruction,
-};
+use solana_transaction_status::{UiCompiledInstruction, UiConfirmedBlock, UiInstruction};
 
 mod mmap_map;
 use mmap_map::MmapMap;
@@ -121,7 +123,16 @@ impl Db {
         Ok(())
     }
 
-    pub fn store_block(&mut self, block: UiConfirmedBlock, mut account_fetcher: impl FnMut(&AccountID) -> eyre::Result<solana_sdk::account::Account>) -> eyre::Result<()> {
+    pub fn store_block(
+        &mut self,
+        block: UiConfirmedBlock,
+        mut account_fetcher: impl FnMut(
+            &[AccountID],
+        ) -> eyre::Result<(
+            Vec<Option<solana_sdk::account::Account>>,
+            Range<u64>,
+        )>,
+    ) -> eyre::Result<()> {
         let block_num = block
             .block_height
             .ok_or_eyre("could not get block height from block")?;
@@ -141,10 +152,21 @@ impl Db {
                 .try_into()
                 .wrap_err("could not parse tx data")?;
 
-            for account_id in tx_data.instrs.iter().map(|i| tx_data.account_table[i.program_account_idx as usize].clone()).collect::<BTreeSet<_>>() {
-                if !self.has_account(&account_id) {
-                    let account = account_fetcher(&account_id)?;
-                    self.store_new_account(account);
+            let accounts_to_fetch = tx_data
+                .instrs
+                .iter()
+                .map(|i| tx_data.account_table[i.program_account_idx as usize].clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .filter(|id| !self.has_account(id))
+                .collect::<Vec<_>>();
+            let (accounts, block_range) = account_fetcher(&accounts_to_fetch)?;
+            for (id, maybe_account) in accounts_to_fetch.into_iter().zip(accounts) {
+                match maybe_account {
+                    Some(account) => self.store_new_account(id, account, block_range.clone())?,
+                    None => {
+                        eprintln!("could not fetch account {id}");
+                    }
                 }
             }
 
@@ -188,7 +210,8 @@ impl Db {
             self.tx_records.push(tx_rec).wrap_err("could not save tx")?;
         }
 
-        self.block_records
+        match self
+            .block_records
             .push(BlockRecord {
                 num: block_num,
                 ts: block.block_time.unwrap_or(i64::MAX),
@@ -199,17 +222,58 @@ impl Db {
                     .map(|v| v.len() as u64)
                     .unwrap_or(u64::MAX),
             })
-            .wrap_err("error storing block")?;
+            .wrap_err("error storing block")
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // roll back tx storage
+                self.heal(io::stderr()).wrap_err(
+                    "failed to revert tx storage operations after failing to store block",
+                )?;
 
-        Ok(())
+                Err(e)
+            }
+        }
     }
 
     pub fn has_account(&self, id: &AccountID) -> bool {
         self.account_records.contains_key(id)
     }
 
-    pub fn store_new_account(&mut self, account: solana_sdk::account::Account) {
-        todo!()
+    pub fn store_new_account(
+        &mut self,
+        id: AccountID,
+        account: solana_sdk::account::Account,
+        block_range: Range<u64>,
+    ) -> eyre::Result<()> {
+        let start_idx = self.account_data.len() as u64;
+        let sz = account.data.len() as u32;
+        self.account_data
+            .reserve(account.data.len())
+            .wrap_err("failed to allocate space for account data")?;
+        for b in account.data {
+            self.account_data
+                .push_within_capacity(b)
+                .map_err(|_| eyre!("failed to push account data to preallocated space"))?;
+        }
+
+        let account_record = AccountRecord {
+            owner: AccountID(account.owner.to_bytes()),
+            min_height: block_range.start,
+            max_height: block_range.end,
+            start_idx,
+            sz,
+            is_executable: account.executable,
+        };
+
+        if self.account_records.insert(id, account_record).is_some() {
+            // roll back account data storage: we don't error out on account storage
+            self.account_data.truncate(start_idx as usize);
+
+            Err(eyre::eyre!("account already exists"))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn last_block_num(&self) -> Option<u64> {
@@ -290,13 +354,11 @@ impl PartialOrd for TxVersion {
 }
 impl Debug for TxVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut f = f.debug_tuple("TxVersion");
         if self.0 == u32::MAX {
-            f.field(&"LEGACY");
+            write!(f, "TxVersion(LEGACY)")
         } else {
-            f.field(&self.0);
+            write!(f, "TxVersion({})", self.0)
         }
-        f.finish()
     }
 }
 
@@ -314,11 +376,23 @@ pub struct TxInstruction {
     stack_height: Option<u32>,
 }
 
+impl Debug for TxInstruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TxInstruction")
+            .field("program_account_idx", &self.program_account_idx)
+            .field("account_idxs", &self.account_idxs)
+            .field("data", &bs58::encode(&self.data).into_string())
+            .field("stack_height", &self.stack_height)
+            .finish()
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Debug)]
 pub struct AccountRecord {
     pub owner: AccountID,
-    pub blocknum: u64,
+    pub min_height: u64,
+    pub max_height: u64,
     pub start_idx: u64,
     pub sz: u32,
     pub is_executable: bool,
@@ -332,39 +406,24 @@ pub struct AccountID([u8; ACCOUNT_ID_LEN]);
 
 impl Display for AccountID {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use base64::Engine;
-        f.write_str(&BASE64_STANDARD.encode(&self.0))
+        Display::fmt(
+            &solana_sdk::pubkey::Pubkey::new_from_array(self.0.clone()),
+            f,
+        )
     }
 }
 impl Debug for AccountID {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use base64::Engine;
-        f.debug_tuple("AccountID")
-            .field(&BASE64_STANDARD.encode(&self.0))
-            .finish()
+        write!(
+            f,
+            "AccountID({})",
+            solana_sdk::pubkey::Pubkey::new_from_array(self.0.clone())
+        )
     }
 }
-
-impl Debug for Db {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Db")
-            .field("blocks", &self.block_records)
-            .field("tx_records", &self.tx_records)
-            .field("tx_data", &self.tx_data)
-            .field("accounts", &"?")
-            .field("account_data", &self.account_data)
-            .finish()
-    }
-}
-
-impl Debug for TxInstruction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TxInstruction")
-            .field("program_account_idx", &self.program_account_idx)
-            .field("account_idxs", &self.account_idxs)
-            .field("data", &BASE64_STANDARD.encode(&self.data))
-            .field("stack_height", &self.stack_height)
-            .finish()
+impl From<AccountID> for [u8; ACCOUNT_ID_LEN] {
+    fn from(value: AccountID) -> Self {
+        value.0
     }
 }
 
@@ -439,13 +498,15 @@ impl TryFrom<String> for AccountID {
     type Error = eyre::Report;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        let bytes = BASE64_STANDARD
-            .decode(value)
-            .wrap_err("error decoding account id")?;
-        let bytes = bytes
-            .try_into()
-            .map_err(|_| eyre!("account id has wrong size"))?;
-        Ok(AccountID(bytes))
+        solana_sdk::pubkey::Pubkey::from_str(&value)
+            .map_err(|e| e.into())
+            .map(|p| p.into())
+    }
+}
+
+impl From<solana_sdk::pubkey::Pubkey> for AccountID {
+    fn from(value: solana_sdk::pubkey::Pubkey) -> Self {
+        Self(value.to_bytes())
     }
 }
 
@@ -456,8 +517,8 @@ impl TryFrom<UiCompiledInstruction> for TxInstruction {
         Ok(Self {
             program_account_idx: value.program_id_index,
             account_idxs: value.accounts,
-            data: BASE64_STANDARD
-                .decode(value.data)
+            data: bs58::decode(value.data)
+                .into_vec()
                 .wrap_err("error decoding tx data")?,
             stack_height: value.stack_height,
         })

@@ -1,7 +1,13 @@
 use eyre::{eyre, Context, Result};
-use scrape_solana::{BlockRecord, Db, TxRecord};
+use scrape_solana::{AccountID, Db};
 use std::{
-    fmt::{Debug, Display}, io, ops::DerefMut, path::PathBuf, str::FromStr, sync::{Arc, Mutex}, time::{Duration, Instant}
+    fmt::Debug,
+    io,
+    ops::Range,
+    path::PathBuf,
+    str::FromStr,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use clap::Parser;
@@ -35,11 +41,10 @@ struct ShardConfig {
     id: u64,
 }
 
-
 fn main() -> Result<()> {
     let args = App::parse();
-    let mut db = unsafe { Db::open(args.db_root_path, io::stdout()) }
-        .wrap_err("failed to open db")?;
+    let db =
+        unsafe { Db::open(args.db_root_path, io::stdout()) }.wrap_err("failed to open db")?;
 
     let endpoint_url = match args.endpoint_url.as_ref() {
         "devnet" => "https://api.devnet.solana.com",
@@ -97,7 +102,10 @@ fn main() -> Result<()> {
     let block_config = block_config;
 
     const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
-    for block_num in (0..=next_blocknum).rev().step_by(args.shard_config.n as usize) {
+    for block_num in (0..=next_blocknum)
+        .rev()
+        .step_by(args.shard_config.n as usize)
+    {
         // retry after reqwest retries
         let mut larger_timeout = Duration::from_secs(1);
         let block = loop {
@@ -131,10 +139,25 @@ fn main() -> Result<()> {
             Err(e) => return Err(e).wrap_err("failed to fetch next block"),
         };
 
+        let account_fetcher = |ids: &[AccountID]| -> eyre::Result<(
+            Vec<Option<solana_sdk::account::Account>>,
+            Range<u64>,
+        )> {
+            let ids = ids
+                .iter()
+                .map(|id| solana_sdk::pubkey::Pubkey::new_from_array(id.to_owned().into()))
+                .collect::<Vec<_>>();
+            let min_height = client.get_block_height()?;
+            let accounts = client.get_multiple_accounts(&ids)?;
+            let max_height = client.get_block_height()?;
+
+            Ok((accounts, min_height..max_height))
+        };
+
         let save_start = Instant::now();
         {
             let mut d = db.lock().unwrap();
-            d.store_block(block)?;
+            d.store_block(block, account_fetcher)?;
         }
         let save_dur = Instant::now().duration_since(save_start);
 

@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use mmap_vec::MmapVec;
 
 /// This trait abstracts away a vector implementation.
 ///
