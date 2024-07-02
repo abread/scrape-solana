@@ -9,3 +9,12 @@ members = [
 
 [profile.dev.package.backtrace]
 opt-level = 3
+
+[profile.release.package.mmap-vec]
+overflow-checks = true
+
+[profile.release.package.vector-trees]
+overflow-checks = true
+
+[profile.release.package.scrape-solana]
+overflow-checks = true
