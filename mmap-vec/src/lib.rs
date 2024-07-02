@@ -169,33 +169,6 @@ where
         }
     }
 
-    /// Create a zero size mmap vec.
-    pub unsafe fn with_name(path: PathBuf, cap: usize) -> io::Result<Self> {
-        check_zst::<T>();
-
-        Ok(Self {
-            segment: Segment::open_rw_existing(path.clone(), cap)?,
-            builder: B::default(),
-            path,
-        })
-    }
-
-    pub fn sync(&self) -> io::Result<()> {
-        self.segment.sync()
-    }
-
-    pub fn persist(mut self) -> io::Result<()> {
-        // extract segment to allow munmap to run and to sync contents to fs
-        let s = std::mem::replace(&mut self.segment, Segment::null());
-        s.sync()?;
-        std::mem::drop(s);
-
-        // ...but forget self to prevent the backing file from being deleted
-        std::mem::forget(self);
-
-        Ok(())
-    }
-
     /// Create a mmap vec with a given capacity.
     ///
     /// This function can fail if FS / IO failed.
@@ -208,6 +181,12 @@ where
     #[inline(always)]
     pub fn capacity(&self) -> usize {
         self.segment.capacity()
+    }
+
+    /// Number of elements in vec.
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.segment.len()
     }
 
     /// Bytes use on disk for this vec.
@@ -357,6 +336,48 @@ where
 
 impl<T, B> MmapVec<T, B>
 where
+    T: Unpin,
+    B: SegmentBuilder,
+{
+    /// Open a persistent mmap vec, creating it if it does not exist.
+    /// Note: created with capacity 1.
+    pub unsafe fn with_name(path: PathBuf) -> io::Result<Self> {
+        Self::with_name_capacity(path, 1)
+    }
+
+    /// Open a persistent mmap vec, creating it if it does not exist with the given capacity.
+    pub unsafe fn with_name_capacity(path: PathBuf, cap: usize) -> io::Result<Self> {
+        check_zst::<T>();
+
+        Ok(Self {
+            segment: Segment::open_rw_existing(path.clone(), cap)?,
+            builder: B::default(),
+            path,
+        })
+    }
+
+    /// Sync to disk.
+    pub fn sync(&self) -> io::Result<()> {
+        self.segment.sync()
+    }
+
+    /// Sync metadata to disk.
+    /// Should be used for implementing crash-consistent collections on top of MmapVec.
+    pub fn sync_meta(&self) -> io::Result<()> {
+        self.segment.sync_meta()
+    }
+
+    /// Drop mmap, explicitly persisting it to disk.
+    pub fn persist(self) -> io::Result<()> {
+        assert!(self.segment.is_persistent(), "map is not named, temporary file will be deleted");
+        self.sync()?;
+        Ok(())
+    }
+
+}
+
+impl<T, B> MmapVec<T, B>
+where
     B: SegmentBuilder + Clone,
     T: Clone,
 {
@@ -450,7 +471,9 @@ where
     B: SegmentBuilder,
 {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if !self.segment.is_persistent() {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 

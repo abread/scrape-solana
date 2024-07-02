@@ -1,16 +1,11 @@
-[package]
-name = "scrape-solana"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+resolver = "2"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+members = [
+    "mmap-vec",
+    "vector-trees",
+    "scrape-solana"
+]
 
-[dependencies]
-clap = { version = "4.5.7", features = ["derive"] }
-color-eyre = "0.6.3"
-ctrlc = "3.4.4"
-eyre = "0.6.12"
-mmap-vec = { path = "./mmap-vec"}
-solana-client = "2.0.1"
-solana-rpc-client-api = "2.0.1"
-solana-sdk = "2.0.1"
+[profile.dev.package.backtrace]
+opt-level = 3

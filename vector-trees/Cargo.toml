@@ -1,0 +1,24 @@
+[package]
+name = "vector-trees"
+version = "0.1.0"
+authors = ["Aurimas Blažulionis <0x60@pm.me>"]
+edition = "2018"
+license = "MIT"
+description = "Vector backed B and AVL trees"
+homepage = "https://github.com/h33p/vector-trees"
+repository = "https://github.com/h33p/vector-trees"
+readme = "README.md"
+
+[features]
+default = []
+avltree = []
+bumpalo = ["dep:bumpalo"]
+mmap-vec = ["dep:mmap-vec"]
+
+[dependencies]
+bumpalo = { version = "3.4.0", features = ["collections"], optional = true }
+mmap-vec = { path = "../mmap-vec", optional = true }
+
+[dev-dependencies]
+rand = "0.7"
+rand_xorshift = { version = "0.2.0" }

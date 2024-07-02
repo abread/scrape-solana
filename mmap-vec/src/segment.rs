@@ -82,48 +82,6 @@ impl<T> Segment<T> {
         })
     }
 
-    /// Memory map a segment to disk.
-    ///
-    /// File will be created and init with computed capacity.
-    pub unsafe fn open_rw_existing<P: AsRef<Path>>(path: P, capacity: usize) -> io::Result<Self> {
-        check_zst::<T>();
-        if capacity == 0 {
-            return Ok(Self::null());
-        }
-
-        let meta_path = path.as_ref().with_extension("meta");
-        let mut meta_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&meta_path)?;
-
-        let existing_metadata: SegmentMetadata = {
-            let mut metadata: MaybeUninit<SegmentMetadataRepr> = MaybeUninit::uninit();
-
-            let metadata_as_slice =  metadata.as_mut_ptr() as *mut [u8; std::mem::size_of::<SegmentMetadataRepr>()];
-            // Safety: metadata has compatible size and alignment with [u8; size_of<SegmentMetadata>]
-            let metadata_as_slice = unsafe { &mut *metadata_as_slice };
-
-            match meta_file.read_exact(metadata_as_slice) {
-                // Safety: metadata was correctly loaded from file
-                Ok(()) => {
-                    let mut m: SegmentMetadata = unsafe { metadata.assume_init() }.into();
-                    m.capacity = m.capacity.max(capacity);
-                    Ok(m)
-                },
-                Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(SegmentMetadata { len: 0, capacity: capacity }),
-                Err(e) => Err(e),
-            }
-        }?;
-
-        let mut res = Self::open_rw(path, existing_metadata.capacity as usize)?;
-        dbg!(&existing_metadata);
-        res.meta = existing_metadata;
-        res.meta_path = Some(meta_path);
-        Ok(res)
-    }
-
     /// Currently used segment size.
     #[inline(always)]
     pub fn capacity(&self) -> usize {
@@ -317,13 +275,20 @@ impl<T> Segment<T> {
         );
     }
 
-    pub fn sync(&self) -> io::Result<()> {
+    pub(crate) fn is_persistent(&self) -> bool {
+        self.meta_path.is_some()
+    }
+
+    /// Sync mmap vec to disk.
+    pub(crate) fn sync(&self) -> io::Result<()> {
         unsafe { libc::msync(self.addr as *mut _, self.meta.capacity, libc::MS_SYNC); }
         self.sync_meta()?;
         Ok(())
     }
 
-    pub fn sync_meta(&self) -> io::Result<()> {
+    /// Sync mmap vec metadata (len, capacity) to disk.
+    /// Should be used for implementing crash-consistent collections on top of MmapVec.
+    pub(crate) fn sync_meta(&self) -> io::Result<()> {
         if let Some(p) = &self.meta_path {
             let mut f = fs::OpenOptions::new()
                 .create(true)
@@ -336,6 +301,50 @@ impl<T> Segment<T> {
         }
 
         Ok(())
+    }
+}
+
+impl<T: Unpin> Segment<T> {
+    /// Memory map a segment to disk.
+    ///
+    /// File will be created and init with computed capacity.
+    pub unsafe fn open_rw_existing<P: AsRef<Path>>(path: P, capacity: usize) -> io::Result<Self> {
+        check_zst::<T>();
+        if capacity == 0 {
+            return Ok(Self::null());
+        }
+
+        let meta_path = path.as_ref().with_extension("meta");
+        let mut meta_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&meta_path)?;
+
+        let existing_metadata: SegmentMetadata = {
+            let mut metadata: MaybeUninit<SegmentMetadataRepr> = MaybeUninit::uninit();
+
+            let metadata_as_slice =  metadata.as_mut_ptr() as *mut [u8; std::mem::size_of::<SegmentMetadataRepr>()];
+            // Safety: metadata has compatible size and alignment with [u8; size_of<SegmentMetadata>]
+            let metadata_as_slice = unsafe { &mut *metadata_as_slice };
+
+            match meta_file.read_exact(metadata_as_slice) {
+                // Safety: metadata was correctly loaded from file
+                Ok(()) => {
+                    let mut m: SegmentMetadata = unsafe { metadata.assume_init() }.into();
+                    m.capacity = m.capacity.max(capacity);
+                    Ok(m)
+                },
+                Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(SegmentMetadata { len: 0, capacity: capacity }),
+                Err(e) => Err(e),
+            }
+        }?;
+
+        let mut res = Self::open_rw(path, existing_metadata.capacity as usize)?;
+        dbg!(&existing_metadata);
+        res.meta = existing_metadata;
+        res.meta_path = Some(meta_path);
+        Ok(res)
     }
 }
 

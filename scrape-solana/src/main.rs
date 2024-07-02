@@ -1,9 +1,7 @@
 use eyre::{eyre, Context, Result};
+use scrape_solana::{BlockRecord, Db, TxRecord};
 use std::{
-    path::PathBuf,
-    str::FromStr,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    fmt::{Debug, Display}, io, ops::DerefMut, path::PathBuf, str::FromStr, sync::{Arc, Mutex}, time::{Duration, Instant}
 };
 
 use clap::Parser;
@@ -40,57 +38,12 @@ struct ShardConfig {
     n: u64,
     id: u64,
 }
-impl FromStr for ShardConfig {
-    type Err = eyre::Error;
-    fn from_str(s: &str) -> eyre::Result<Self> {
-        let (n, id) = s
-            .split_once(':')
-            .ok_or_else(|| eyre!("shard config missing delimiter ':'"))?;
 
-        let n = n
-            .parse::<u64>()
-            .wrap_err("invalid shard config: field n must be a positive integer")?;
-        let id = id.parse::<u64>().wrap_err(
-            "invalid shard config: field id must be a non-negative integer smaller than n",
-        )?;
-
-        if n == 0 {
-            Err(eyre!(
-                "invalid shard config: field n must be a positive integer"
-            ))
-        } else if id >= n {
-            Err(eyre!("invalid shard config: field id must be 0 <= id < n"))
-        } else {
-            Ok(ShardConfig { n, id })
-        }
-    }
-}
-
-#[repr(C, packed)]
-#[derive(Default, Debug)]
-struct TxRecord {
-    block_id: u64,
-    fee: u64,
-    compute_units: u64,
-}
-
-#[repr(C, packed)]
-#[derive(Default, Debug)]
-struct BlockRecord {
-    block_id: u64,
-    ts: i64,
-    tx_count: u64,
-}
-
-#[derive(Debug)]
-struct Db {
-    blocks: MmapVec<BlockRecord>,
-    txs: MmapVec<TxRecord>,
-}
 
 fn main() -> Result<()> {
     let args = App::parse();
-    let mut db = open_db(args.db_root_path).wrap_err("failed to open db")?;
+    let mut db = unsafe { Db::open(args.db_root_path, io::stdout()) }
+        .wrap_err("failed to open db")?;
 
     let endpoint_url = match args.endpoint_url.as_ref() {
         "devnet" => "https://api.devnet.solana.com",
@@ -100,8 +53,8 @@ fn main() -> Result<()> {
     };
 
     let client = RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
-    let next_block = if let Some(b) = db.blocks.last() {
-        b.block_id.saturating_sub(args.shard_config.n)
+    let next_blocknum = if let Some(bnum) = db.last_block_num() {
+        bnum.saturating_sub(args.shard_config.n)
     } else {
         println!("empty dataset: fetching latest blocknum");
         let b = client
@@ -118,28 +71,11 @@ fn main() -> Result<()> {
     };
 
     assert!(
-        next_block % args.shard_config.n == args.shard_config.id,
+        next_blocknum % args.shard_config.n == args.shard_config.id,
         "mismatch between last stored block and shard configuration. expected shard id {}, got {}",
         args.shard_config.id,
-        next_block % args.shard_config.n
+        next_blocknum % args.shard_config.n
     );
-
-    // cleanup semi-fetched txs
-    let mut trunc_idx = db.txs.len() - 1;
-    for i in (0..db.txs.len()).rev() {
-        if db.txs[i].block_id == next_block {
-            trunc_idx = i;
-        } else {
-            break;
-        }
-    }
-    if (trunc_idx + 1) != db.txs.len() {
-        println!(
-            "dropping {} txs from block {next_block} (possible partial fetch)",
-            db.txs.len() - trunc_idx - 1
-        );
-        db.txs.truncate(trunc_idx + 1);
-    }
 
     let db = Arc::new(Mutex::new(db));
 
@@ -165,7 +101,8 @@ fn main() -> Result<()> {
     let block_config = block_config;
 
     const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
-    for block_num in (0..=next_block).rev().step_by(args.shard_config.n as usize) {
+    for block_num in (0..=next_blocknum).rev().step_by(args.shard_config.n as usize) {
+        // retry after reqwest retries
         let mut larger_timeout = Duration::from_secs(1);
         let block = loop {
             match client.get_block_with_config(block_num, block_config) {
@@ -183,6 +120,7 @@ fn main() -> Result<()> {
             }
         };
 
+        // handle fetch errors
         let block = match block {
             Ok(b) => b,
             Err(ClientError {
@@ -200,28 +138,7 @@ fn main() -> Result<()> {
         let save_start = Instant::now();
         {
             let mut d = db.lock().unwrap();
-            let txs = block.transactions.unwrap_or(Vec::new());
-
-            let block_rec = BlockRecord {
-                block_id: block_num,
-                ts: block.block_time.unwrap_or(i64::MAX),
-                tx_count: txs.len() as u64,
-            };
-
-            for tx in txs {
-                let tx_rec = TxRecord {
-                    block_id: block_num,
-                    fee: tx.meta.as_ref().map(|m| m.fee).unwrap_or(u64::MAX),
-                    compute_units: tx
-                        .meta
-                        .as_ref()
-                        .map(|m| m.compute_units_consumed.clone().unwrap_or(u64::MAX))
-                        .unwrap_or(u64::MAX),
-                };
-
-                d.txs.push(tx_rec).wrap_err("could not save tx")?;
-            }
-            d.blocks.push(block_rec).wrap_err("could not save block")?;
+            d.store_block(block)?;
         }
         let save_dur = Instant::now().duration_since(save_start);
 
@@ -232,42 +149,28 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-impl Db {
-    fn sync(&mut self) -> Result<()> {
-        self.txs.sync().wrap_err("could not sync txs table")?;
-        self.blocks.sync().wrap_err("could not sync blocks table")?;
-        Ok(())
+impl FromStr for ShardConfig {
+    type Err = eyre::Error;
+    fn from_str(s: &str) -> eyre::Result<Self> {
+        let (n, id) = s
+            .split_once(':')
+            .ok_or_else(|| eyre!("shard config missing delimiter ':'"))?;
+
+        let n = n
+            .parse::<u64>()
+            .wrap_err("invalid shard config: field n must be a positive integer")?;
+        let id = id.parse::<u64>().wrap_err(
+            "invalid shard config: field id must be a non-negative integer smaller than n",
+        )?;
+
+        if n == 0 {
+            Err(eyre!(
+                "invalid shard config: field n must be a positive integer"
+            ))
+        } else if id >= n {
+            Err(eyre!("invalid shard config: field id must be 0 <= id < n"))
+        } else {
+            Ok(ShardConfig { n, id })
+        }
     }
-}
-
-impl Drop for Db {
-    fn drop(&mut self) {
-        // The MmapVec destructor deletes the backing file.
-        // To avoid this, we use the persist method, which calls sync to ensure the vec is written
-        // to disk, and destructs the MmapVec without deleting the backing file.
-
-        std::mem::replace(&mut self.txs, MmapVec::new())
-            .persist()
-            .expect("could not persist txs");
-        std::mem::replace(&mut self.blocks, MmapVec::new())
-            .persist()
-            .expect("could not persist blocks");
-    }
-}
-
-fn open_db(db_root_path: PathBuf) -> Result<Db> {
-    std::fs::create_dir_all(&db_root_path).wrap_err("Failed to create DB dir")?;
-
-    let blocks = unsafe { MmapVec::with_name(db_root_path.join("blocks"), EXPECTED_BLOCK_COUNT) }
-        .wrap_err("Failed to open blocks table")?;
-
-    let txs = unsafe {
-        MmapVec::with_name(
-            db_root_path.join("txs"),
-            EXPECTED_BLOCK_COUNT * EXPECTED_TXS_PER_BLOCK,
-        )
-    }
-    .wrap_err("Failed to open txs table")?;
-
-    Ok(Db { blocks, txs })
 }
