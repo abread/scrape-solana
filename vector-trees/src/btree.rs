@@ -4,6 +4,7 @@ use core::cmp::{Ord, Ordering};
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem;
+use nonmax::NonMaxU64;
 
 pub const B: usize = 8;
 pub const MAX_CHILDREN: usize = B * 2;
@@ -12,7 +13,7 @@ pub const MAX_KEYS: usize = MAX_CHILDREN - 1;
 #[derive(Debug)]
 pub struct BVecTreeNode<K, V> {
     keys: [Option<(K, V)>; MAX_KEYS],
-    children: [Option<u32>; MAX_CHILDREN],
+    children: [Option<NonMaxU64>; MAX_CHILDREN],
     cur_keys: usize,
     leaf: bool,
 }
@@ -96,7 +97,7 @@ impl<K: Ord, V> BVecTreeNode<K, V> {
         self.cur_keys -= 1;
     }
 
-    fn remove_key(&mut self, key_id: usize) -> (Option<(K, V)>, Option<u32>) {
+    fn remove_key(&mut self, key_id: usize) -> (Option<(K, V)>, Option<NonMaxU64>) {
         let key = self.keys[key_id].take();
         let child = self.children[key_id].take();
 
@@ -105,7 +106,7 @@ impl<K: Ord, V> BVecTreeNode<K, V> {
         (key, child)
     }
 
-    fn remove_key_rchild(&mut self, key_id: usize) -> (Option<(K, V)>, Option<u32>) {
+    fn remove_key_rchild(&mut self, key_id: usize) -> (Option<(K, V)>, Option<NonMaxU64>) {
         let key = self.keys[key_id].take();
         let child = self.children[key_id + 1].take();
 
@@ -193,8 +194,8 @@ impl<K: Ord, V> BVecTreeNode<K, V> {
 
 pub struct BVecTreeMap<S, K, V>(BVecTreeMapData<S, K, V>);
 pub struct BVecTreeMapData<S, K, V> {
-    pub root: Option<u32>,
-    pub free_head: Option<u32>,
+    pub root: Option<NonMaxU64>,
+    pub free_head: Option<NonMaxU64>,
     pub tree_buf: S,
     pub len: usize,
     pub _phantom: PhantomData<(K, V)>,
@@ -468,7 +469,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         None
     }
 
-    fn remove_key(&mut self, node_id: u32, key_id: usize) -> (Option<(K, V)>, Option<u32>) {
+    fn remove_key(&mut self, node_id: NonMaxU64, key_id: usize) -> (Option<(K, V)>, Option<NonMaxU64>) {
         let node = self.get_node_mut(node_id);
         node.remove_key(key_id)
     }
@@ -476,7 +477,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
     /// Merge `key_id` child of `parent` with `key_id + 1` child
     ///
     /// Returns new parent
-    fn merge_children(&mut self, parent: u32, key_id: usize) -> u32 {
+    fn merge_children(&mut self, parent: NonMaxU64, key_id: usize) -> NonMaxU64 {
         let parent_node = self.get_node_mut(parent);
         let left_child = parent_node.children[key_id].unwrap();
         let right_child = parent_node.children[key_id + 1].unwrap();
@@ -497,7 +498,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         }
     }
 
-    fn ensure_node_degree(&mut self, parent: u32, child_id: usize) -> u32 {
+    fn ensure_node_degree(&mut self, parent: NonMaxU64, child_id: usize) -> NonMaxU64 {
         let parent_node = self.get_node(parent);
         let child_node_id = parent_node.children[child_id].unwrap();
         let child_node = self.get_node(child_node_id);
@@ -537,7 +538,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         parent
     }
 
-    fn split_child(&mut self, parent: u32, child_id: usize) {
+    fn split_child(&mut self, parent: NonMaxU64, child_id: usize) {
         let node_to_split = self.get_node(parent).children[child_id].unwrap();
         let new_node = self.allocate_node();
 
@@ -570,32 +571,32 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         self.get_node_mut(parent).children[child_id + 1] = Some(new_node);
     }
 
-    fn insert_node(&mut self, node_id: u32, value: (K, V)) -> Option<(K, V)> {
+    fn insert_node(&mut self, node_id: NonMaxU64, value: (K, V)) -> Option<(K, V)> {
         self.get_node_mut(node_id).insert_node(value)
     }
 
-    fn get_node_mut(&mut self, id: u32) -> &mut BVecTreeNode<K, V> {
-        self.0.tree_buf.slice_mut().get_mut(id as usize).unwrap()
+    fn get_node_mut(&mut self, id: NonMaxU64) -> &mut BVecTreeNode<K, V> {
+        self.0.tree_buf.slice_mut().get_mut(Into::<u64>::into(id) as usize).unwrap()
     }
 
     /// Returns 2 individual mutable nodes
     fn get_two_nodes_mut(
         &mut self,
-        left: u32,
-        right: u32,
+        left: NonMaxU64,
+        right: NonMaxU64,
     ) -> (&mut BVecTreeNode<K, V>, &mut BVecTreeNode<K, V>) {
         debug_assert!(left != right);
 
         if left < right {
-            let (_, br) = self.0.tree_buf.slice_mut().split_at_mut(left as usize);
+            let (_, br) = self.0.tree_buf.slice_mut().split_at_mut(Into::<u64>::into(left) as usize);
             let (left_ret, right_side) = br.split_first_mut().unwrap();
-            let (_, br) = right_side.split_at_mut((right - left - 1) as usize);
+            let (_, br) = right_side.split_at_mut((Into::<u64>::into(right) - Into::<u64>::into(left) - 1) as usize);
             let (right_ret, _) = br.split_first_mut().unwrap();
             (left_ret, right_ret)
         } else {
-            let (_, br) = self.0.tree_buf.slice_mut().split_at_mut(right as usize);
+            let (_, br) = self.0.tree_buf.slice_mut().split_at_mut(Into::<u64>::into(right) as usize);
             let (right_ret, right_side) = br.split_first_mut().unwrap();
-            let (_, br) = right_side.split_at_mut((left - right - 1) as usize);
+            let (_, br) = right_side.split_at_mut((Into::<u64>::into(left) - Into::<u64>::into(right) - 1) as usize);
             let (left_ret, _) = br.split_first_mut().unwrap();
             (left_ret, right_ret)
         }
@@ -603,7 +604,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
 
     fn get_key_nodes_mut(
         &mut self,
-        parent: u32,
+        parent: NonMaxU64,
         key: usize,
     ) -> (
         &mut Option<(K, V)>,
@@ -619,11 +620,11 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         (key_mut, self.get_two_nodes_mut(left, right))
     }
 
-    fn get_node(&self, id: u32) -> &BVecTreeNode<K, V> {
-        self.0.tree_buf.slice().get(id as usize).unwrap()
+    fn get_node(&self, id: NonMaxU64) -> &BVecTreeNode<K, V> {
+        self.0.tree_buf.slice().get(Into::<u64>::into(id) as usize).unwrap()
     }
 
-    fn allocate_node(&mut self) -> u32 {
+    fn allocate_node(&mut self) -> NonMaxU64 {
         if let Some(idx) = self.0.free_head {
             let free_node = self.get_node_mut(idx);
             let child_zero = free_node.children[0];
@@ -631,13 +632,13 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
             self.0.free_head = child_zero;
             idx
         } else {
-            let ret = self.0.tree_buf.len() as u32;
+            let ret = NonMaxU64::new(self.0.tree_buf.len() as u64).expect("alloc fail");
             self.0.tree_buf.push(BVecTreeNode::default());
             ret
         }
     }
 
-    fn free_node(&mut self, node_id: u32) {
+    fn free_node(&mut self, node_id: NonMaxU64) {
         let head = self.0.free_head;
         let node = self.get_node_mut(node_id);
 
