@@ -151,7 +151,7 @@ fn main() -> Result<()> {
                 );
                 continue;
             }
-            Err(e) => return Err(e).wrap_err("failed to fetch next block"),
+            Err(e) => return Err(e).wrap_err_with(|| format!("failed to fetch next block {block_num}")),
         };
 
         let save_start = Instant::now();
