@@ -144,6 +144,7 @@ impl Db {
         }
 
         let tx_start_idx = self.tx_records.len() as u64;
+        let mut accounts_to_fetch = BTreeSet::new();
 
         for tx in block.transactions.as_ref().unwrap_or(&Vec::new()) {
             let tx_data: TxPayload = tx
@@ -152,23 +153,12 @@ impl Db {
                 .try_into()
                 .wrap_err("could not parse tx data")?;
 
-            let accounts_to_fetch = tx_data
-                .instrs
-                .iter()
-                .map(|i| tx_data.account_table[i.program_account_idx as usize].clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .filter(|id| !self.has_account(id))
-                .collect::<Vec<_>>();
-            let (accounts, block_range) = account_fetcher(&accounts_to_fetch)?;
-            for (id, maybe_account) in accounts_to_fetch.into_iter().zip(accounts) {
-                match maybe_account {
-                    Some(account) => self.store_new_account(id, account, block_range.clone())?,
-                    None => {
-                        eprintln!("could not fetch account {id}");
-                    }
-                }
-            }
+            accounts_to_fetch.extend(
+                tx_data
+                    .instrs
+                    .iter()
+                    .map(|i| tx_data.account_table[i.program_account_idx as usize].clone()),
+            );
 
             let tx_data = bincode::serialize(&tx_data).wrap_err("could not serialize tx data")?;
 
@@ -224,16 +214,35 @@ impl Db {
             })
             .wrap_err("error storing block")
         {
-            Ok(_) => Ok(()),
+            Ok(_) => (),
             Err(e) => {
                 // roll back tx storage
                 self.heal(io::stderr()).wrap_err(
                     "failed to revert tx storage operations after failing to store block",
                 )?;
 
-                Err(e)
+                return Err(e);
             }
         }
+
+        let accounts_to_fetch = accounts_to_fetch
+            .into_iter()
+            .filter(|id| !self.has_account(id))
+            .collect::<Vec<_>>();
+
+        if accounts_to_fetch.len() > 0 {
+            let (accounts, block_range) = account_fetcher(&accounts_to_fetch)?;
+            for (id, maybe_account) in accounts_to_fetch.into_iter().zip(accounts) {
+                match maybe_account {
+                    Some(account) => self.store_new_account(id, account, block_range.clone())?,
+                    None => {
+                        eprintln!("could not fetch account {id}");
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn has_account(&self, id: &AccountID) -> bool {

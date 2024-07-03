@@ -23,16 +23,17 @@ impl<K: Unpin + Ord + Debug, V: Unpin + Debug> MmapMap<K, V> {
         let (meta_storage, meta) = MapMetaStorage::open(path.with_extension(".map_meta"))
             .wrap_err("failed to open map metadata")?;
 
-        let map_vec = MmapVec::with_name(path)
-            .wrap_err("failed to open map inner vec")?;
+        let map_vec = MmapVec::with_name(path).wrap_err("failed to open map inner vec")?;
 
-        let map = unsafe { BVecTreeMap::from_raw(BVecTreeMapData {
-            root: meta.root,
-            free_head: meta.free_head,
-            tree_buf: map_vec,
-            len: meta.len as usize,
-            _phantom: std::marker::PhantomData,
-        }) };
+        let map = unsafe {
+            BVecTreeMap::from_raw(BVecTreeMapData {
+                root: meta.root,
+                free_head: meta.free_head,
+                tree_buf: map_vec,
+                len: meta.len as usize,
+                _phantom: std::marker::PhantomData,
+            })
+        };
 
         Ok(Self { map, meta_storage })
     }
@@ -109,15 +110,25 @@ impl MapMetaStorage {
             .open(path)
             .wrap_err("could not open map metadata file")?;
 
-        let f_meta = f.metadata().wrap_err("could not read map metadata file metadata")?;
-        eyre::ensure!(f_meta.is_file(), "map metadata file is corrupted: must be a regular file");
+        let f_meta = f
+            .metadata()
+            .wrap_err("could not read map metadata file metadata")?;
+        eyre::ensure!(
+            f_meta.is_file(),
+            "map metadata file is corrupted: must be a regular file"
+        );
 
         if f_meta.size() == 0 {
             Ok((MapMetaStorage(f), MapMetaRaw::default()))
         } else if f_meta.size() == size_of::<MapMetaRaw>() as u64 {
             let mut map_meta = MaybeUninit::uninit();
             {
-                let mutref = unsafe { core::slice::from_raw_parts_mut(map_meta.as_mut_ptr() as *mut u8, size_of::<MapMetaRaw>()) };
+                let mutref = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        map_meta.as_mut_ptr() as *mut u8,
+                        size_of::<MapMetaRaw>(),
+                    )
+                };
 
                 f.read_exact(mutref)
                     .wrap_err("could not read map metadata from file")?;
@@ -127,12 +138,15 @@ impl MapMetaStorage {
 
             Ok((MapMetaStorage(f), unsafe { map_meta.assume_init() }))
         } else {
-            Err(eyre::eyre!("map metadata file is corrupted: must be empty or exactly-sized"))
+            Err(eyre::eyre!(
+                "map metadata file is corrupted: must be empty or exactly-sized"
+            ))
         }
     }
 
     fn write<S, K, V>(&mut self, map_data: &BVecTreeMapData<S, K, V>) -> eyre::Result<()> {
-        self.0.seek(io::SeekFrom::Start(0))
+        self.0
+            .seek(io::SeekFrom::Start(0))
             .wrap_err("could not seek to start of map metadata file")?;
 
         let meta_raw = MapMetaRaw {
@@ -140,12 +154,16 @@ impl MapMetaStorage {
             free_head: map_data.free_head,
             len: map_data.len as u64,
         };
-        let meta_raw_bytes = unsafe { core::slice::from_raw_parts(addr_of!(meta_raw) as *const u8, size_of::<MapMetaRaw>()) };
+        let meta_raw_bytes = unsafe {
+            core::slice::from_raw_parts(addr_of!(meta_raw) as *const u8, size_of::<MapMetaRaw>())
+        };
 
-        self.0.write_all(meta_raw_bytes)
+        self.0
+            .write_all(meta_raw_bytes)
             .wrap_err("could not write map metadata file")?;
 
-        self.0.sync_all()
+        self.0
+            .sync_all()
             .wrap_err("could not fsync map metadata file")?;
 
         Ok(())
@@ -154,6 +172,10 @@ impl MapMetaStorage {
 
 impl Default for MapMetaRaw {
     fn default() -> Self {
-        MapMetaRaw { root: None, free_head: None, len: 0 }
+        MapMetaRaw {
+            root: None,
+            free_head: None,
+            len: 0,
+        }
     }
 }
