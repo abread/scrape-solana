@@ -100,6 +100,8 @@ fn main() -> Result<()> {
     block_config.max_supported_transaction_version = Some(0);
     let block_config = block_config;
 
+    const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
+
     let account_fetcher = |ids: &[AccountID]| -> eyre::Result<(
         Vec<Option<solana_sdk::account::Account>>,
         Range<u64>,
@@ -110,13 +112,15 @@ fn main() -> Result<()> {
             .map(|id| solana_sdk::pubkey::Pubkey::new_from_array(id.to_owned().into()))
             .collect::<Vec<_>>();
         let min_height = client.get_block_height()?;
+        std::thread::sleep(MIN_WAIT);
         let accounts = client.get_multiple_accounts(&ids)?;
+        std::thread::sleep(MIN_WAIT);
         let max_height = client.get_block_height()?;
+        std::thread::sleep(MIN_WAIT);
 
         Ok((accounts, min_height..max_height))
     };
 
-    const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
     for block_num in (0..=next_blocknum)
         .rev()
         .step_by(args.shard_config.n as usize)
@@ -151,13 +155,17 @@ fn main() -> Result<()> {
                 );
                 continue;
             }
-            Err(e) => return Err(e).wrap_err_with(|| format!("failed to fetch next block {block_num}")),
+            r @ Err(_) => {
+                let r = r.wrap_err(format!("failed to fetch next block {block_num}"));
+                eprintln!("{:?}", r.unwrap_err());
+                continue;
+            }
         };
 
         let save_start = Instant::now();
         {
             let mut d = db.lock().unwrap();
-            d.store_block(block, account_fetcher)?;
+            d.store_block(block, account_fetcher).wrap_err_with(|| format!("failed to store block {block_num}"))?;
         }
         let save_dur = Instant::now().duration_since(save_start);
 
