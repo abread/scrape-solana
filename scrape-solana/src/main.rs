@@ -165,7 +165,8 @@ fn main() -> Result<()> {
         let save_start = Instant::now();
         {
             let mut d = db.lock().unwrap();
-            d.store_block(block, account_fetcher).wrap_err_with(|| format!("failed to store block {block_num}"))?;
+            d.store_block(block, account_fetcher)
+                .wrap_err_with(|| format!("failed to store block {block_num}"))?;
         }
         let save_dur = Instant::now().duration_since(save_start);
 
