@@ -14,6 +14,9 @@ use crate::{
     utils::{check_zst, page_size},
 };
 
+pub const HUGE_PAGE_THRESH: usize = 32 * 1024 * 1024; // 32MiB
+pub const HUGE_PAGE_SZ: usize = 2 * 1024 * 1024; // 2MiB
+
 /// Segment is a constant slice of type T that is memory mapped to disk.
 ///
 /// It is the basic building block of memory mapped data structure.
@@ -75,7 +78,11 @@ impl<T> Segment<T> {
         }
 
         // try to align to page boundary
-        let page_size = page_size();
+        let mut page_size = page_size();
+        if capacity * std::mem::size_of::<T>() > HUGE_PAGE_THRESH {
+            page_size = HUGE_PAGE_SZ; // 2MiB
+        }
+
         let rem_bytes = (capacity * std::mem::size_of::<T>()) % page_size;
         if rem_bytes > 0 && (page_size - rem_bytes) >= std::mem::size_of::<T>() {
             let target_bytes = capacity * std::mem::size_of::<T>();
@@ -84,8 +91,6 @@ impl<T> Segment<T> {
             debug_assert!(new_capacity >= capacity);
             capacity = new_capacity;
         }
-
-        // |abcd|ef  |
 
         let file = OpenOptions::new()
             .read(true)
@@ -345,8 +350,6 @@ impl<T> Segment<T> {
         }
     }
 
-    }
-
     pub(crate) fn is_persistent(&self) -> bool {
         self.meta_path.is_some()
     }
@@ -458,9 +461,19 @@ impl<T> Drop for Segment<T> {
 unsafe impl<T> Send for Segment<T> {}
 unsafe impl<T> Sync for Segment<T> {}
 
+const fn segment_size<T>(capacity: usize) -> usize {
+    let size = capacity * mem::size_of::<T>();
+    if cfg!(os = "linux") && size > HUGE_PAGE_THRESH && size % HUGE_PAGE_SZ != 0 {
+        // align to hugepage boundary to encourage the OS to do better
+        size + HUGE_PAGE_SZ - (size % HUGE_PAGE_SZ)
+    } else {
+        size
+    }
+}
+
 unsafe fn ftruncate<T>(file: &File, capacity: usize) -> io::Result<()> {
     check_zst::<T>();
-    let segment_size = capacity * mem::size_of::<T>();
+    let segment_size = segment_size::<T>(capacity);
     let fd = file.as_raw_fd();
 
     if libc::ftruncate(fd, segment_size as libc::off_t) != 0 {
@@ -473,7 +486,7 @@ unsafe fn ftruncate<T>(file: &File, capacity: usize) -> io::Result<()> {
 
 unsafe fn mmap<T>(file: &File, capacity: usize) -> io::Result<ptr::NonNull<T>> {
     check_zst::<T>();
-    let segment_size = capacity * mem::size_of::<T>();
+    let segment_size = segment_size::<T>(capacity);
 
     // It is safe to not keep a reference to the initial file descriptor.
     // See: https://stackoverflow.com/questions/17490033/do-i-need-to-keep-a-file-open-after-calling-mmap-on-it
@@ -488,23 +501,38 @@ unsafe fn mmap<T>(file: &File, capacity: usize) -> io::Result<ptr::NonNull<T>> {
         0,
     );
 
-    if addr == libc::MAP_FAILED {
+    let addr = if addr == libc::MAP_FAILED {
         COUNT_MMAP_FAILED.fetch_add(1, Ordering::Relaxed);
-        Err(io::Error::last_os_error())
+        return Err(io::Error::last_os_error());
     } else {
         COUNT_ACTIVE_SEGMENT.fetch_add(1, Ordering::Relaxed);
-        ptr::NonNull::new(addr.cast()).ok_or(io::Error::new(
+        ptr::NonNull::new(addr).ok_or(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "mmap returned null pointer",
-        ))
+        ))?
+    };
+
+    if cfg!(os = "linux") && segment_size > HUGE_PAGE_THRESH {
+        let madvise_ret =
+            unsafe { libc::madvise(addr.as_ptr(), segment_size, libc::MADV_HUGEPAGE) };
+
+        if madvise_ret != 0 {
+            eprintln!(
+                "Error advising kernel to use TransparentHugePages: {:?}",
+                io::Error::last_os_error()
+            );
+        }
     }
+
+    Ok(addr.cast())
 }
 
 unsafe fn munmap<T>(addr: ptr::NonNull<T>, capacity: usize) -> io::Result<()> {
     check_zst::<T>();
     debug_assert!(capacity > 0);
+    let segment_size = segment_size::<T>(capacity);
 
-    let unmap_code = libc::munmap(addr.as_ptr().cast(), capacity * mem::size_of::<T>());
+    let unmap_code = libc::munmap(addr.as_ptr().cast(), segment_size);
 
     if unmap_code != 0 {
         COUNT_MUNMAP_FAILED.fetch_add(1, Ordering::Relaxed);
