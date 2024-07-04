@@ -156,6 +156,15 @@ fn main() -> Result<()> {
                 );
                 continue;
             }
+            Err(ClientError {
+                kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32007, .. }),
+                ..
+            }) => {
+                eprintln!(
+                    "skipped block {block_slot}: skipped, or missing due to ledger jump to recent snapshot"
+                );
+                continue;
+            }
             r @ Err(_) => {
                 let r = r.wrap_err(format!("failed to fetch next block {block_slot}"));
                 eprintln!("{:?}", r.unwrap_err());
