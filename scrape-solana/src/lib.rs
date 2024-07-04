@@ -5,6 +5,7 @@ use std::{
     collections::BTreeSet,
     fmt::{Debug, Display},
     io,
+    num::NonZeroI64,
     ops::Range,
     path::PathBuf,
     str::FromStr,
@@ -208,7 +209,7 @@ impl Db {
             .block_records
             .push(BlockRecord {
                 num: block_num,
-                ts: block.block_time.unwrap_or(i64::MAX),
+                ts: block.block_time.and_then(NonZeroI64::new),
                 tx_start_idx,
                 tx_count: block
                     .transactions
@@ -320,7 +321,7 @@ impl Db {
 #[derive(Default, Debug)]
 pub struct BlockRecord {
     pub num: u64,
-    pub ts: i64,
+    pub ts: Option<NonZeroI64>,
     pub tx_start_idx: u64,
     pub tx_count: u64,
 }
