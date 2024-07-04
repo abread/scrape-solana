@@ -350,6 +350,14 @@ impl<T> Segment<T> {
         }
     }
 
+    pub(crate) fn take_meta_path(&mut self) -> Option<PathBuf> {
+        self.meta_path.take()
+    }
+
+    pub(crate) fn set_meta_path(&mut self, path: Option<PathBuf>) {
+        self.meta_path = path;
+    }
+
     pub(crate) fn is_persistent(&self) -> bool {
         self.meta_path.is_some()
     }

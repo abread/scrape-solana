@@ -311,6 +311,8 @@ where
         let new_capacity = current_len + additional;
 
         if self.capacity() < new_capacity {
+            self.segment.sync_meta()?;
+
             // Map again path with a new segment but with bigger capacity.
             let new_segment = Segment::<T>::open_rw(&self.path, new_capacity)?;
             debug_assert!(new_segment.capacity() > self.segment.capacity());
@@ -325,6 +327,9 @@ where
                 old_segment.set_len(0);
                 self.segment.set_len(current_len);
             }
+
+            // Keep metadata path from old segment to ensure it stays persistent
+            self.segment.set_meta_path(old_segment.take_meta_path());
         }
 
         Ok(())
