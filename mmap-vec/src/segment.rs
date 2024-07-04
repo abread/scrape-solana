@@ -429,7 +429,6 @@ impl<T: Unpin> Segment<T> {
         }?;
 
         let mut res = Self::open_rw(path, existing_metadata.capacity as usize)?;
-        dbg!(&existing_metadata);
         res.meta = existing_metadata;
         res.meta_path = Some(meta_path);
         Ok(res)
