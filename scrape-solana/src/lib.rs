@@ -90,7 +90,9 @@ impl Db {
                 "dropping {} txs (possible partial fetch)",
                 self.tx_records.len() - expected_len,
             );
-            self.tx_records.truncate(expected_len);
+            self.tx_records
+                .truncate(expected_len)
+                .wrap_err("failed to prune tx records from partially processed block")?;
             r1?; // error not critical
         }
 
@@ -109,14 +111,16 @@ impl Db {
             }
         }
 
-        // prune possibly partially fetched tx_records
+        // prune possibly partially fetched tx_data
         if expected_len != self.tx_data.len() {
             let r2 = writeln!(
                 out,
                 "dropping {} bytes from tx data (possible partial fetch)",
                 self.tx_data.len() - expected_len,
             );
-            self.tx_data.truncate(expected_len);
+            self.tx_data
+                .truncate(expected_len)
+                .wrap_err("failed to prune tx data from partially processed block")?;
             r2?; // error not critical
         }
 
@@ -277,7 +281,9 @@ impl Db {
 
         if self.account_records.insert(id, account_record).is_some() {
             // roll back account data storage: we don't error out on account storage
-            self.account_data.truncate(start_idx as usize);
+            if let Err(e) = self.account_data.truncate(start_idx as usize) {
+                eprintln!("error rolling back store_new_account: {:?}", e);
+            }
 
             Err(eyre::eyre!("account already exists"))
         } else {
