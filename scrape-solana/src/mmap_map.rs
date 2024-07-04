@@ -20,7 +20,7 @@ pub struct MmapMap<K, V> {
 
 impl<K: Unpin + Ord + Debug, V: Unpin + Debug> MmapMap<K, V> {
     pub unsafe fn with_name(path: PathBuf) -> eyre::Result<Self> {
-        let (meta_storage, meta) = MapMetaStorage::open(path.with_extension(".map_meta"))
+        let (meta_storage, meta) = MapMetaStorage::open(path.with_extension("map_meta"))
             .wrap_err("failed to open map metadata")?;
 
         let map_vec = MmapVec::with_name(path).wrap_err("failed to open map inner vec")?;
