@@ -369,11 +369,13 @@ where
 
     /// Drop mmap, explicitly persisting it to disk.
     pub fn persist(self) -> io::Result<()> {
-        assert!(self.segment.is_persistent(), "map is not named, temporary file will be deleted");
+        assert!(
+            self.segment.is_persistent(),
+            "map is not named, temporary file will be deleted"
+        );
         self.sync()?;
         Ok(())
     }
-
 }
 
 impl<T, B> MmapVec<T, B>

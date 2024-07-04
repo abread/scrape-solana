@@ -1,6 +1,7 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, ErrorKind, Read, Write}, mem::{self, MaybeUninit},
+    io::{self, ErrorKind, Read, Write},
+    mem::{self, MaybeUninit},
     ops::{Deref, DerefMut},
     os::fd::AsRawFd,
     path::{Path, PathBuf},
@@ -18,11 +19,27 @@ use crate::{
 /// It is the basic building block of memory mapped data structure.
 ///
 /// It cannot growth / shrink.
-#[derive(Debug)]
 pub struct Segment<T> {
-    pub(crate) addr: *mut T,
+    pub(crate) addr: ptr::NonNull<T>,
     meta: SegmentMetadata,
     meta_path: Option<PathBuf>,
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Segment<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let addr = if self.addr == ptr::NonNull::dangling() {
+            ptr::null_mut()
+        } else {
+            self.addr.as_ptr()
+        };
+
+        f.debug_struct("Segment")
+            .field("addr", &addr)
+            .field("len", &self.meta.len)
+            .field("capacity", &self.meta.capacity)
+            //.field("meta_path", &self.meta_path)
+            .finish()
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -43,7 +60,7 @@ impl<T> Segment<T> {
     pub const fn null() -> Self {
         check_zst::<T>();
         Self {
-            addr: std::ptr::null_mut(),
+            addr: ptr::NonNull::dangling(),
             meta: SegmentMetadata {
                 len: 0,
                 capacity: 0,
@@ -74,10 +91,7 @@ impl<T> Segment<T> {
         let addr = unsafe { mmap(&file, capacity) }?;
         Ok(Self {
             addr,
-            meta: SegmentMetadata {
-                len: 0,
-                capacity,
-            },
+            meta: SegmentMetadata { len: 0, capacity },
             meta_path: None,
         })
     }
@@ -97,7 +111,8 @@ impl<T> Segment<T> {
 
         unsafe {
             let remaining_len = self.meta.len - new_len;
-            let items = ptr::slice_from_raw_parts_mut(self.addr.add(new_len), remaining_len);
+            let items =
+                ptr::slice_from_raw_parts_mut(self.addr.as_ptr().add(new_len), remaining_len);
             self.set_len(new_len);
             self.sync_meta().unwrap();
             ptr::drop_in_place(items);
@@ -111,14 +126,21 @@ impl<T> Segment<T> {
     /// If delete count is greater than the segment len, then this call will be
     /// equivalent to calling `clear` function.
     pub fn truncate_first(&mut self, delete_count: usize) {
-        let new_len = self.meta.len.saturating_add_signed(-(delete_count as isize));
+        let new_len = self
+            .meta
+            .len
+            .saturating_add_signed(-(delete_count as isize));
         if new_len == 0 {
             self.clear()
         } else {
             unsafe {
-                let items = slice::from_raw_parts_mut(self.addr, delete_count);
+                let items = slice::from_raw_parts_mut(self.addr.as_ptr(), delete_count);
                 ptr::drop_in_place(items);
-                ptr::copy(self.addr.add(delete_count), self.addr, new_len);
+                ptr::copy(
+                    self.addr.as_ptr().add(delete_count),
+                    self.addr.as_ptr(),
+                    new_len,
+                );
                 self.set_len(new_len);
                 self.sync_meta().unwrap();
             }
@@ -129,7 +151,7 @@ impl<T> Segment<T> {
     #[inline]
     pub fn clear(&mut self) {
         unsafe {
-            let items = slice::from_raw_parts_mut(self.addr, self.meta.len);
+            let items = slice::from_raw_parts_mut(self.addr.as_ptr(), self.meta.len);
             self.set_len(0);
             self.sync_meta().unwrap();
             ptr::drop_in_place(items);
@@ -160,7 +182,7 @@ impl<T> Segment<T> {
         }
 
         unsafe {
-            let dst = self.addr.add(self.meta.len);
+            let dst = self.addr.as_ptr().add(self.meta.len);
             ptr::write(dst, value);
         }
 
@@ -180,7 +202,7 @@ impl<T> Segment<T> {
         self.meta.len -= 1;
         self.sync_meta().unwrap();
         unsafe {
-            let src = self.addr.add(self.meta.len);
+            let src = self.addr.as_ptr().add(self.meta.len);
             Some(ptr::read(src))
         }
     }
@@ -206,20 +228,30 @@ impl<T> Segment<T> {
     /// # let _ = std::fs::remove_file("test_extend_from_segment_1.seg");
     /// # let _ = std::fs::remove_file("test_extend_from_segment_2.seg");
     /// ```
-    pub fn extend_from_segment(&mut self, mut other: Segment<T>) {
-        let new_len = other.meta.len + self.meta.len;
-        assert!(
-            new_len <= self.meta.capacity,
-            "New segment is too small: new_len={}, capacity={}",
-            new_len,
-            self.meta.capacity
-        );
+    pub fn extend_from_segment(&mut self, mut other: Segment<T>) -> io::Result<()> {
+        if other.len() == 0 {
+            return Ok(()); // nothing to copy
+        }
 
+        if self.capacity() < self.len() + other.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "segment too small for new data",
+            ));
+        }
+
+        let new_len = self.len() + other.len();
         unsafe {
-            ptr::copy_nonoverlapping(other.addr, self.addr.add(self.meta.len), other.meta.len);
+            ptr::copy_nonoverlapping(
+                other.addr.as_ptr(),
+                self.addr.as_ptr().add(self.len()),
+                other.len(),
+            );
             self.set_len(new_len);
             other.set_len(0);
         };
+
+        Ok(())
     }
 
     /// Inform the kernel that the complete segment will be access in a near future.
@@ -230,13 +262,13 @@ impl<T> Segment<T> {
     ///
     /// Will panic if `libc::madvise` return an error.
     pub fn advice_prefetch_all_pages(&self) {
-        if self.addr.is_null() || self.meta.len == 0 {
+        if self.addr == ptr::NonNull::dangling() || self.meta.len == 0 {
             return;
         }
 
         let madvise_code = unsafe {
             libc::madvise(
-                self.addr.cast(),
+                self.addr.as_ptr().cast(),
                 self.meta.len * mem::size_of::<T>(),
                 libc::MADV_WILLNEED,
             )
@@ -253,7 +285,7 @@ impl<T> Segment<T> {
     ///
     /// This function is only a wrapper above `libc::madvise`.
     pub fn advice_prefetch_page_at(&self, index: usize) {
-        if self.addr.is_null() || index >= self.meta.len {
+        if self.addr == ptr::NonNull::dangling() || index >= self.meta.len {
             return;
         }
 
@@ -262,7 +294,7 @@ impl<T> Segment<T> {
 
         let madvise_code = unsafe {
             libc::madvise(
-                (self.addr.add(index) as usize & page_mask) as *mut libc::c_void,
+                (self.addr.as_ptr().add(index) as usize & page_mask) as *mut libc::c_void,
                 page_size,
                 libc::MADV_WILLNEED,
             )
@@ -281,7 +313,9 @@ impl<T> Segment<T> {
 
     /// Sync mmap vec to disk.
     pub(crate) fn sync(&self) -> io::Result<()> {
-        unsafe { libc::msync(self.addr as *mut _, self.meta.capacity, libc::MS_SYNC); }
+        unsafe {
+            libc::msync(self.addr.as_ptr().cast(), self.meta.capacity, libc::MS_SYNC);
+        }
         self.sync_meta()?;
         Ok(())
     }
@@ -290,10 +324,7 @@ impl<T> Segment<T> {
     /// Should be used for implementing crash-consistent collections on top of MmapVec.
     pub(crate) fn sync_meta(&self) -> io::Result<()> {
         if let Some(p) = &self.meta_path {
-            let mut f = fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .open(p)?;
+            let mut f = fs::OpenOptions::new().create(true).write(true).open(p)?;
 
             let m: SegmentMetadataRepr = self.meta.clone().into();
             f.write_all(m.bytes())?;
@@ -324,7 +355,8 @@ impl<T: Unpin> Segment<T> {
         let existing_metadata: SegmentMetadata = {
             let mut metadata: MaybeUninit<SegmentMetadataRepr> = MaybeUninit::uninit();
 
-            let metadata_as_slice =  metadata.as_mut_ptr() as *mut [u8; std::mem::size_of::<SegmentMetadataRepr>()];
+            let metadata_as_slice =
+                metadata.as_mut_ptr() as *mut [u8; std::mem::size_of::<SegmentMetadataRepr>()];
             // Safety: metadata has compatible size and alignment with [u8; size_of<SegmentMetadata>]
             let metadata_as_slice = unsafe { &mut *metadata_as_slice };
 
@@ -334,8 +366,11 @@ impl<T: Unpin> Segment<T> {
                     let mut m: SegmentMetadata = unsafe { metadata.assume_init() }.into();
                     m.capacity = m.capacity.max(capacity);
                     Ok(m)
-                },
-                Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(SegmentMetadata { len: 0, capacity: capacity }),
+                }
+                Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(SegmentMetadata {
+                    len: 0,
+                    capacity: capacity,
+                }),
                 Err(e) => Err(e),
             }
         }?;
@@ -353,25 +388,30 @@ impl<T> Deref for Segment<T> {
 
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        unsafe { slice::from_raw_parts(self.addr, self.meta.len) }
+        unsafe { slice::from_raw_parts(self.addr.as_ptr(), self.meta.len) }
     }
 }
 
 impl<T> DerefMut for Segment<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { slice::from_raw_parts_mut(self.addr, self.meta.len) }
+        unsafe { slice::from_raw_parts_mut(self.addr.as_ptr(), self.meta.len) }
     }
 }
 
 impl<T> Drop for Segment<T> {
     fn drop(&mut self) {
         if self.meta.len > 0 {
-            unsafe { ptr::drop_in_place(ptr::slice_from_raw_parts_mut(self.addr, self.meta.len)) }
+            unsafe {
+                ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
+                    self.addr.as_ptr(),
+                    self.meta.len,
+                ))
+            }
         }
 
-        if !self.addr.is_null() {
-            let _ = unsafe { munmap(self.addr, self.meta.capacity) };
+        if self.addr != ptr::NonNull::dangling() {
+            unsafe { munmap(self.addr, self.meta.capacity) }.expect("unmap error");
         }
     }
 }
@@ -392,7 +432,7 @@ unsafe fn ftruncate<T>(file: &File, capacity: usize) -> io::Result<()> {
     }
 }
 
-unsafe fn mmap<T>(file: &File, capacity: usize) -> io::Result<*mut T> {
+unsafe fn mmap<T>(file: &File, capacity: usize) -> io::Result<ptr::NonNull<T>> {
     check_zst::<T>();
     let segment_size = capacity * mem::size_of::<T>();
 
@@ -414,16 +454,18 @@ unsafe fn mmap<T>(file: &File, capacity: usize) -> io::Result<*mut T> {
         Err(io::Error::last_os_error())
     } else {
         COUNT_ACTIVE_SEGMENT.fetch_add(1, Ordering::Relaxed);
-        Ok(addr.cast())
+        ptr::NonNull::new(addr.cast()).ok_or(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "mmap returned null pointer",
+        ))
     }
 }
 
-unsafe fn munmap<T>(addr: *mut T, capacity: usize) -> io::Result<()> {
+unsafe fn munmap<T>(addr: ptr::NonNull<T>, capacity: usize) -> io::Result<()> {
     check_zst::<T>();
-    debug_assert!(!addr.is_null());
     debug_assert!(capacity > 0);
 
-    let unmap_code = libc::munmap(addr.cast(), capacity * mem::size_of::<T>());
+    let unmap_code = libc::munmap(addr.as_ptr().cast(), capacity * mem::size_of::<T>());
 
     if unmap_code != 0 {
         COUNT_MUNMAP_FAILED.fetch_add(1, Ordering::Relaxed);
@@ -433,7 +475,6 @@ unsafe fn munmap<T>(addr: *mut T, capacity: usize) -> io::Result<()> {
         Ok(())
     }
 }
-
 
 impl From<SegmentMetadataRepr> for SegmentMetadata {
     fn from(value: SegmentMetadataRepr) -> Self {

@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs, io,
     path::PathBuf,
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -110,7 +110,7 @@ fn test_copy() {
     assert_eq!(&segment2[..], &[]);
 
     // Erase data in seg2.
-    segment2.extend_from_segment(segment1.into_inner());
+    segment2.extend_from_segment(segment1.into_inner()).unwrap();
     assert_eq!(&segment2[..], &[ROW1, ROW2]);
 }
 
@@ -122,12 +122,11 @@ fn test_copy_already_filled() {
     assert_eq!(segment1.push_within_capacity(ROW1), Ok(()));
     assert_eq!(segment2.push_within_capacity(ROW2), Ok(()));
 
-    segment2.extend_from_segment(segment1.into_inner());
+    segment2.extend_from_segment(segment1.into_inner()).unwrap();
     assert_eq!(&segment2[..], &[ROW2, ROW1]);
 }
 
 #[test]
-#[should_panic = "New segment is too small: new_len=4, capacity=3"]
 fn test_copy_bad_capacity() {
     let mut segment1 =
         TemporarySegment::<u8, _>::open_rw("test_copy_bad_capacity_1.seg", 2).unwrap();
@@ -139,7 +138,13 @@ fn test_copy_bad_capacity() {
     assert_eq!(segment2.push_within_capacity(0), Ok(()));
     assert_eq!(segment2.push_within_capacity(0), Ok(()));
 
-    segment2.extend_from_segment(segment1.into_inner());
+    assert_eq!(
+        segment2
+            .extend_from_segment(segment1.into_inner())
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::OutOfMemory
+    );
 }
 
 #[test]
