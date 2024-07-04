@@ -90,13 +90,11 @@ fn main() -> Result<()> {
     .wrap_err("could not set Ctrl+C handler")?;
 
     let db2 = Arc::clone(&db); // capture db
-    std::thread::spawn(move || {
-        loop {
-            println!("saving db...");
-            db2.lock().unwrap().sync().unwrap();
-            println!("db saved");
-            std::thread::sleep(Duration::from_secs(5))
-        }
+    std::thread::spawn(move || loop {
+        println!("saving db...");
+        db2.lock().unwrap().sync().unwrap();
+        println!("db saved");
+        std::thread::sleep(Duration::from_secs(5))
     });
 
     std::thread::sleep(Duration::from_millis(500)); // ensure we respect rate limits
