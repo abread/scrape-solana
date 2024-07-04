@@ -130,6 +130,7 @@ impl Db {
 
     pub fn store_block(
         &mut self,
+        slot: u64,
         block: UiConfirmedBlock,
         mut account_fetcher: impl FnMut(
             &[AccountID],
@@ -138,10 +139,13 @@ impl Db {
             Range<u64>,
         )>,
     ) -> eyre::Result<()> {
-        let block_num = block
-            .block_height
-            .ok_or_eyre("could not get block height from block")?;
-        if block_num >= self.block_records.last().map(|b| b.num).unwrap_or(u64::MAX) {
+        if slot
+            >= self
+                .block_records
+                .last()
+                .map(|b| b.slot)
+                .unwrap_or(u64::MAX)
+        {
             // HACK: DO NOT REMOVE UNLESS YOU CHANGE HEALING LOGIC
             return Err(eyre::eyre!(
                 "block is already in store or higher than those in store"
@@ -208,7 +212,7 @@ impl Db {
         match self
             .block_records
             .push(BlockRecord {
-                num: block_num,
+                slot,
                 ts: block.block_time.and_then(NonZeroI64::new),
                 tx_start_idx,
                 tx_count: block
@@ -292,8 +296,8 @@ impl Db {
         }
     }
 
-    pub fn last_block_num(&self) -> Option<u64> {
-        self.block_records.last().map(|b| b.num)
+    pub fn last_block_slot(&self) -> Option<u64> {
+        self.block_records.last().map(|b| b.slot)
     }
 
     pub fn sync(&mut self) -> eyre::Result<()> {
@@ -320,7 +324,7 @@ impl Db {
 #[repr(C, packed)]
 #[derive(Default, Debug)]
 pub struct BlockRecord {
-    pub num: u64,
+    pub slot: u64,
     pub ts: Option<NonZeroI64>,
     pub tx_start_idx: u64,
     pub tx_count: u64,

@@ -53,7 +53,7 @@ fn main() -> Result<()> {
     };
 
     let client = RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
-    let next_blocknum = if let Some(bnum) = db.last_block_num() {
+    let next_blocknum = if let Some(bnum) = db.last_block_slot() {
         bnum.saturating_sub(args.shard_config.n)
     } else {
         println!("empty dataset: fetching latest blocknum");
@@ -121,20 +121,20 @@ fn main() -> Result<()> {
         Ok((accounts, min_height..max_height))
     };
 
-    for block_num in (0..=next_blocknum)
+    for block_slot in (0..=next_blocknum)
         .rev()
         .step_by(args.shard_config.n as usize)
     {
         // retry after reqwest retries
         let mut larger_timeout = Duration::from_secs(1);
         let block = loop {
-            match client.get_block_with_config(block_num, block_config) {
+            match client.get_block_with_config(block_slot, block_config) {
                 Ok(b) => break Ok(b),
                 Err(ClientError {
                     kind: ClientErrorKind::Reqwest(e),
                     ..
                 }) if e.is_timeout() => {
-                    eprintln!("block #{block_num} fetch timeout, retrying in {larger_timeout:#?}");
+                    eprintln!("block #{block_slot} fetch timeout, retrying in {larger_timeout:#?}");
                     std::thread::sleep(larger_timeout);
                     larger_timeout *= 2;
                     continue;
@@ -151,12 +151,12 @@ fn main() -> Result<()> {
                 ..
             }) => {
                 eprintln!(
-                    "skipped block {block_num}: not present in Solana nodes nor long-term storage"
+                    "skipped block {block_slot}: not present in Solana nodes nor long-term storage"
                 );
                 continue;
             }
             r @ Err(_) => {
-                let r = r.wrap_err(format!("failed to fetch next block {block_num}"));
+                let r = r.wrap_err(format!("failed to fetch next block {block_slot}"));
                 eprintln!("{:?}", r.unwrap_err());
                 continue;
             }
@@ -165,12 +165,12 @@ fn main() -> Result<()> {
         let save_start = Instant::now();
         {
             let mut d = db.lock().unwrap();
-            d.store_block(block, account_fetcher)
-                .wrap_err_with(|| format!("failed to store block {block_num}"))?;
+            d.store_block(block_slot, block, account_fetcher)
+                .wrap_err_with(|| format!("failed to store block {block_slot}"))?;
         }
         let save_dur = Instant::now().duration_since(save_start);
 
-        println!("fetched and saved block {block_num}");
+        println!("fetched and saved block {block_slot}");
         std::thread::sleep(MIN_WAIT - save_dur.min(MIN_WAIT));
     }
 
