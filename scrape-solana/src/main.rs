@@ -56,17 +56,18 @@ fn main() -> Result<()> {
     let next_blocknum = if let Some(bnum) = db.last_block_slot() {
         bnum.saturating_sub(args.shard_config.n)
     } else {
-        println!("empty dataset: fetching latest blocknum");
-        let b = client
-            .get_block_height()
-            .wrap_err("failed to get latest blocknum")?;
-        println!("latest block is {b}");
+        println!("empty dataset: fetching latest block slot");
+        let slot = client
+            .get_epoch_info()
+            .wrap_err("failed to get latest block slot")?
+            .absolute_slot;
+        println!("latest block is {slot}");
 
-        let b_shard = b % args.shard_config.n;
-        if b_shard != args.shard_config.id {
-            b.saturating_sub(b_shard + args.shard_config.n - args.shard_config.id)
+        let slot_shard = slot % args.shard_config.n;
+        if slot_shard != args.shard_config.id {
+            slot.saturating_sub(slot_shard + args.shard_config.n - args.shard_config.id)
         } else {
-            b
+            slot
         }
     };
 
