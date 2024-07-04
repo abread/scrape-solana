@@ -59,7 +59,7 @@ impl<T> Vector<T> for bumpalo::collections::Vec<'_, T> {
 #[cfg(feature = "mmap-vec")]
 impl<T> Vector<T> for mmap_vec::MmapVec<T> {
     fn clear(&mut self) {
-        self.clear();
+        self.clear().expect("mmapvec clear fail");
     }
 
     fn len(&self) -> usize {
