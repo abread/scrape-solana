@@ -135,8 +135,6 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 
-use crate::utils::page_size;
-
 mod segment;
 mod segment_builder;
 mod stats;
@@ -150,6 +148,9 @@ pub struct MmapVec<T, B: SegmentBuilder = DefaultSegmentBuilder> {
     pub(crate) builder: B,
     pub(crate) path: PathBuf,
 }
+
+/// Max number of pages allocated in one go
+pub const MAX_EXP_GROWTH_BYTES: usize = 128 * 1024 * 1024; // 128MiB
 
 impl<T, B> MmapVec<T, B>
 where
@@ -198,8 +199,8 @@ where
     /// Shortens the vec, keeping the first `new_len` elements and dropping
     /// the rest.
     #[inline(always)]
-    pub fn truncate(&mut self, new_len: usize) {
-        self.segment.truncate(new_len);
+    pub fn truncate(&mut self, new_len: usize) -> io::Result<()> {
+        self.segment.truncate(new_len)
     }
 
     /// Remove `delete_count` element at beginning of the vec.
@@ -226,14 +227,14 @@ where
     /// assert_eq!(&v[..], []);
     /// ```
     #[inline(always)]
-    pub fn truncate_first(&mut self, delete_count: usize) {
-        self.segment.truncate_first(delete_count);
+    pub fn truncate_first(&mut self, delete_count: usize) -> io::Result<()> {
+        self.segment.truncate_first(delete_count)
     }
 
     /// Clears the vec, removing all values.
     #[inline(always)]
-    pub fn clear(&mut self) {
-        self.segment.clear();
+    pub fn clear(&mut self) -> io::Result<()> {
+        self.segment.clear()
     }
 
     /// Remove last value of the vec.
@@ -253,10 +254,7 @@ where
     /// This is why this function can fail, because it depends on FS / IO calls.
     pub fn push(&mut self, value: T) -> Result<(), io::Error> {
         // Reserve some space if vec is full.
-        if self.capacity() == self.len() {
-            let min_capacity = page_size() / mem::size_of::<T>();
-            self.reserve(std::cmp::max(self.len(), min_capacity))?;
-        }
+        self.reserve(1)?;
 
         // Add new value to vec.
         assert!(
@@ -284,19 +282,35 @@ where
     ///    At this point, the file is mmap twice.
     /// 3. Replace `self.segment` we newly mapped segment if there is no error.
     /// 4. Update segment len to avoid calling drop on unwanted data.
-    pub fn reserve(&mut self, additional: usize) -> Result<(), io::Error> {
+    #[inline(always)]
+    pub fn reserve(&mut self, min_additional: usize) -> Result<(), io::Error> {
+        use std::cmp::{max, min};
+
+        if self.capacity() < self.len() + min_additional {
+            // grow capacity exponentially up to a point
+            let exp_growth = min(MAX_EXP_GROWTH_BYTES / mem::size_of::<T>(), self.len());
+            let additional_capacity = max(min_additional, exp_growth);
+
+            self.grow(additional_capacity)?;
+        }
+
+        Ok(())
+    }
+
+    /// Resize the vec without copying data.
+    ///
+    /// # How it works ?
+    ///
+    /// 1. It first check we need to grow the segment.
+    /// 2. Call `Segment::<T>::open_rw` with a bigger capacity that what we already reserve.
+    ///    At this point, the file is mmap twice.
+    /// 3. Replace `self.segment` we newly mapped segment if there is no error.
+    /// 4. Update segment len to avoid calling drop on unwanted data.
+    fn grow(&mut self, additional: usize) -> Result<(), io::Error> {
         let current_len = self.len();
-        let mut new_capacity = current_len + additional;
+        let new_capacity = current_len + additional;
 
         if self.capacity() < new_capacity {
-            // Round to upper page new capacity
-            let page_size = page_size();
-            let page_capacity = page_size / mem::size_of::<T>();
-            if new_capacity % page_capacity != 0 {
-                new_capacity += page_capacity - (new_capacity % page_capacity);
-            }
-            assert!(new_capacity > self.segment.capacity());
-
             // Map again path with a new segment but with bigger capacity.
             let new_segment = Segment::<T>::open_rw(&self.path, new_capacity)?;
             debug_assert!(new_segment.capacity() > self.segment.capacity());

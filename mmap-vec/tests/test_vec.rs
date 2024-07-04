@@ -3,20 +3,49 @@ use std::sync::{
     Arc,
 };
 
-use mmap_vec::{DefaultSegmentBuilder, MmapVec};
-
-pub use data_gen::*;
+use mmap_vec::{DefaultSegmentBuilder, MmapVec, MAX_EXP_GROWTH_BYTES};
 
 mod data_gen;
+pub use data_gen::*;
+
+mod utils;
+use utils::page_size;
+
+macro_rules! assert_consistent_disksz {
+    ($s:ident) => {{
+        fn el_size<T>(_: &MmapVec<T>) -> usize {
+            std::mem::size_of::<T>()
+        }
+        assert_eq!(
+            $s.disk_size(),
+            $s.capacity() * el_size(&$s),
+            "disk size does not match capacity * element size"
+        );
+        assert!(
+            $s.disk_size() % page_size() == 0
+                || page_size() - ($s.disk_size() % page_size()) < el_size(&$s),
+            "disk size wasting pages"
+        );
+    }};
+}
 
 #[test]
 fn test_resize() {
+    assert!(
+        page_size() > 16 * std::mem::size_of_val(&ROW1),
+        "page size too small for test(?)"
+    );
+
     let mut v = MmapVec::<DataRow>::new();
-    assert_eq!(v.capacity(), 0);
+    let mut expected_capacity = 0;
+    assert_eq!(v.capacity(), expected_capacity);
+    assert_consistent_disksz!(v);
 
     // Trigger first growth
     v.push(ROW1).unwrap();
-    assert_eq!(v.capacity(), 170);
+    assert!(v.capacity() >= 1); // size of row is < page size
+    assert_consistent_disksz!(v);
+    expected_capacity = v.capacity();
     assert_eq!(v[0], ROW1);
     assert_eq!(&v[..], &[ROW1]);
 
@@ -24,27 +53,38 @@ fn test_resize() {
     while v.len() < v.capacity() {
         v.push(ROW1).unwrap();
     }
-    assert_eq!(v.capacity(), 170);
+    assert_eq!(v.capacity(), expected_capacity);
+    assert_consistent_disksz!(v);
 
-    // Trigger second growth
-    v.push(ROW2).unwrap();
-    assert_eq!(v.capacity(), 340);
+    // Exponential growth until MAX_EXP_GROWTH_BYTES
+    while v.disk_size() < mmap_vec::MAX_EXP_GROWTH_BYTES {
+        // Trigger second growth
+        v.push(ROW2).unwrap();
+        assert!(v.capacity() >= expected_capacity * 2);
+        expected_capacity = v.capacity();
+        assert_consistent_disksz!(v);
 
-    // Fill vec
-    while v.len() < v.capacity() {
-        v.push(ROW1).unwrap();
+        // Fill vec
+        while v.len() < v.capacity() {
+            v.push(ROW1).unwrap();
+        }
+        assert_eq!(v.capacity(), expected_capacity);
+        assert_consistent_disksz!(v);
     }
-    assert_eq!(v.capacity(), 340);
 
-    // Trigger third growth
+    // Trigger another growth
     v.push(ROW2).unwrap();
-    assert_eq!(v.capacity(), 680);
+
+    // confirm it was not exponential
+    assert!(v.capacity() - expected_capacity < MAX_EXP_GROWTH_BYTES);
+    assert_consistent_disksz!(v);
 }
 
 #[test]
 fn test_with_capacity() {
     let v = MmapVec::<DataRow>::with_capacity(500).unwrap();
-    assert_eq!(v.capacity(), 500);
+    assert!(v.capacity() >= 500);
+    assert_consistent_disksz!(v);
 }
 
 #[test]
@@ -102,21 +142,21 @@ fn test_truncate() {
     assert_eq!(v.len(), 3);
 
     // Trigger with too high value
-    v.truncate(500000);
+    v.truncate(500000).unwrap();
     assert_eq!(counter.load(Ordering::Relaxed), 0);
     assert_eq!(v.len(), 3);
 
     // Trigger resize
-    v.truncate(2);
+    v.truncate(2).unwrap();
     assert_eq!(v.len(), 2);
     assert_eq!(counter.load(Ordering::Relaxed), 1);
 
-    v.truncate(0);
+    v.truncate(0).unwrap();
     assert_eq!(v.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 3);
 
     // Trigger on empty segment
-    v.truncate(0);
+    v.truncate(0).unwrap();
     assert_eq!(v.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 3);
 }
@@ -136,28 +176,28 @@ fn test_truncate_first() {
     // Truncate 0
     {
         let mut v = build_vec();
-        v.truncate_first(0);
+        v.truncate_first(0).unwrap();
         assert_eq!(&v[..], [8, 5, 3, 12]);
     }
 
     // Truncate half
     {
         let mut v = build_vec();
-        v.truncate_first(2);
+        v.truncate_first(2).unwrap();
         assert_eq!(&v[..], [3, 12]);
     }
 
     // Truncate len
     {
         let mut v = build_vec();
-        v.truncate_first(v.len());
+        v.truncate_first(v.len()).unwrap();
         assert_eq!(&v[..], []);
     }
 
     // Truncate too much
     {
         let mut v = build_vec();
-        v.truncate_first(v.len() + 1000);
+        v.truncate_first(v.len() + 1000).unwrap();
         assert_eq!(&v[..], []);
     }
 }
@@ -173,12 +213,12 @@ fn test_clear() {
     assert_eq!(v.len(), 2);
 
     // Trigger cleanup
-    v.clear();
+    v.clear().unwrap();
     assert_eq!(v.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 2);
 
     // Trigger on empty segment
-    v.clear();
+    v.clear().unwrap();
     assert_eq!(v.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 2);
 }
@@ -279,30 +319,33 @@ fn test_advice_prefetch() {
 
 #[test]
 fn test_reserve_in_place() {
-    const PAGE_SIZE: usize = 4096;
-
     // Test on null segment
     {
         let mut s = MmapVec::<i32>::new();
         assert_eq!(s.capacity(), 0);
+
         s.reserve(50).unwrap();
-        assert_eq!(s.capacity(), 1024);
+        assert!(s.capacity() >= 50);
+        assert_consistent_disksz!(s);
     }
 
     // Test on valid segment with free space
     {
         let mut s = MmapVec::<i32>::with_capacity(100).unwrap();
-        assert_eq!(s.capacity(), 100);
+        assert!(s.capacity() >= 100);
 
+        let prev_capacity = s.capacity();
         assert!(s.reserve(50).is_ok());
-        assert_eq!(s.capacity(), 100);
+        assert_eq!(s.capacity(), prev_capacity);
+        assert_consistent_disksz!(s);
     }
 
     // Test on valid segment with free space
     {
         // Fill the vec
         let mut s = MmapVec::<i32>::with_capacity(100).unwrap();
-        assert_eq!(s.capacity(), 100);
+        assert!(s.capacity() >= 100);
+        assert_consistent_disksz!(s);
 
         // Reserve few bytes and check rounding
         while s.len() < s.capacity() {
@@ -310,8 +353,8 @@ fn test_reserve_in_place() {
         }
 
         assert!(s.reserve(50).is_ok());
-        assert_eq!(s.capacity(), 1024);
-        assert_eq!(s.disk_size(), PAGE_SIZE);
+        assert!(s.capacity() >= 100 + 50);
+        assert_consistent_disksz!(s);
 
         // Reserve one full page
         while s.len() < s.capacity() {
@@ -319,8 +362,8 @@ fn test_reserve_in_place() {
         }
 
         assert!(s.reserve(1024).is_ok());
-        assert_eq!(s.capacity(), 2048);
-        assert_eq!(s.disk_size(), 2 * PAGE_SIZE);
+        assert!(s.capacity() >= 100 + 50 + 1024);
+        assert_consistent_disksz!(s);
 
         // Reserve a single byte
         while s.len() < s.capacity() {
@@ -328,8 +371,8 @@ fn test_reserve_in_place() {
         }
 
         assert!(s.reserve(1).is_ok());
-        assert_eq!(s.capacity(), 3072);
-        assert_eq!(s.disk_size(), 3 * PAGE_SIZE);
+        assert!(s.capacity() >= 100 + 50 + 1024 + 1);
+        assert_consistent_disksz!(s);
     }
 }
 
@@ -337,6 +380,10 @@ fn test_reserve_in_place() {
 fn test_reserve_in_place_drop() {
     let mut s = MmapVec::<DroppableRow>::with_capacity(100).unwrap();
     let counter = Arc::new(AtomicU32::new(0));
+    let mut expected_capacity = s.capacity();
+    assert!(expected_capacity >= 100);
+    let mut expected_len = s.len();
+    assert_eq!(expected_len, 0);
 
     // Fill vec
     while s.len() < s.capacity() {
@@ -344,23 +391,28 @@ fn test_reserve_in_place_drop() {
             .push_within_capacity(DroppableRow::new(counter.clone()))
             .is_ok());
     }
-    assert_eq!(s.capacity(), 100);
+    assert_eq!(s.capacity(), expected_capacity);
     assert_eq!(counter.load(Ordering::Relaxed), 0);
+    assert_eq!(s.len(), expected_capacity);
+    expected_len = expected_capacity;
 
     // Trigger resize
     assert!(s.reserve(50).is_ok());
+    assert!(s.capacity() >= expected_capacity + 50);
+    expected_capacity = s.capacity();
     assert_eq!(counter.load(Ordering::Relaxed), 0);
 
     // Fill vec again
     assert!(s
         .push_within_capacity(DroppableRow::new(counter.clone()))
         .is_ok());
-    assert_eq!(s.capacity(), 512);
-    assert_eq!(s.len(), 101);
+    assert_eq!(s.capacity(), expected_capacity);
+    assert_eq!(s.len(), expected_len + 1);
+    expected_len += 1;
     assert_eq!(counter.load(Ordering::Relaxed), 0);
 
     drop(s);
-    assert_eq!(counter.load(Ordering::Relaxed), 101);
+    assert_eq!(counter.load(Ordering::Relaxed) as usize, expected_len);
 }
 
 #[test]

@@ -12,6 +12,9 @@ use mmap_vec::Segment;
 pub use data_gen::*;
 pub use temporary_seg::*;
 
+mod utils;
+use utils::page_size;
+
 mod data_gen;
 mod temporary_seg;
 
@@ -55,9 +58,12 @@ fn test_open_valid_segment() {
 
     // Check initial layout.
     assert_eq!(segment.len(), 0);
-    assert_eq!(segment.capacity(), 3);
-    assert_eq!(segment.disk_size(), 24 * 3);
+    assert!(segment.capacity() >= 3);
+    assert!(segment.disk_size() >= std::mem::size_of_val(&ROW1) * 3);
+    assert!(segment.disk_size() >= page_size() / std::mem::size_of_val(&ROW1));
     assert_eq!(&segment[..], &[]);
+
+    let initial_cap = segment.capacity();
 
     // Check we cannot pop anything.
     assert_eq!(segment.pop(), None);
@@ -65,28 +71,41 @@ fn test_open_valid_segment() {
     // Add few items.
     assert_eq!(segment.push_within_capacity(ROW1), Ok(()));
     assert_eq!(segment.len(), 1);
-    assert_eq!(segment.capacity(), 3);
+    assert_eq!(segment.capacity(), initial_cap);
     assert_eq!(&segment[..], &[ROW1]);
 
     assert_eq!(segment.push_within_capacity(ROW2), Ok(()));
     assert_eq!(segment.push_within_capacity(ROW3), Ok(()));
     assert_eq!(segment.len(), 3);
-    assert_eq!(segment.capacity(), 3);
+    assert_eq!(segment.capacity(), initial_cap);
     assert_eq!(&segment[..], &[ROW1, ROW2, ROW3]);
+
+    // fill segment
+    while segment.len() != segment.capacity() {
+        segment.push_within_capacity(ROW1).unwrap();
+    }
 
     // Add more items than segment can hold.
+    let prev_len = segment.len();
     assert_eq!(segment.push_within_capacity(ROW4), Err(ROW4));
-    assert_eq!(segment.len(), 3);
-    assert_eq!(segment.capacity(), 3);
-    assert_eq!(&segment[..], &[ROW1, ROW2, ROW3]);
+    assert_eq!(segment.len(), prev_len);
+    assert_eq!(segment.capacity(), initial_cap);
+    assert_eq!(&segment[0..3], &[ROW1, ROW2, ROW3]);
 
     // Pop everything.
+    while segment.len() != 3 {
+        assert_eq!(segment.pop(), Some(ROW1));
+    }
+    assert_eq!(segment.capacity(), initial_cap);
     assert_eq!(segment.pop(), Some(ROW3));
+    assert_eq!(segment.capacity(), initial_cap);
     assert_eq!(segment.pop(), Some(ROW2));
     assert_eq!(segment.pop(), Some(ROW1));
+    assert_eq!(segment.capacity(), initial_cap);
 
     assert_eq!(segment.pop(), None);
     assert_eq!(&segment[..], &[]);
+    assert_eq!(segment.capacity(), initial_cap);
 
     // Add back some elements and check data are well replaced.
     assert_eq!(segment.push_within_capacity(ROW4), Ok(()));
@@ -104,7 +123,6 @@ fn test_copy() {
     // Init and check segments.
     assert_eq!(segment1.push_within_capacity(ROW1), Ok(()));
     assert_eq!(segment1.push_within_capacity(ROW2), Ok(()));
-    assert_eq!(segment1.push_within_capacity(ROW3), Err(ROW3));
 
     assert_eq!(&segment1[..], &[ROW1, ROW2]);
     assert_eq!(&segment2[..], &[]);
@@ -133,10 +151,15 @@ fn test_copy_bad_capacity() {
     let mut segment2 =
         TemporarySegment::<u8, _>::open_rw("test_copy_bad_capacity_2.seg", 3).unwrap();
 
-    assert_eq!(segment1.push_within_capacity(0), Ok(()));
-    assert_eq!(segment1.push_within_capacity(0), Ok(()));
-    assert_eq!(segment2.push_within_capacity(0), Ok(()));
-    assert_eq!(segment2.push_within_capacity(0), Ok(()));
+    segment1.push_within_capacity(0).unwrap();
+    segment1.push_within_capacity(0).unwrap();
+
+    // fill segment2 to capacity-1
+    assert!(segment2.capacity() > 1);
+    segment2.push_within_capacity(0).unwrap();
+    while segment2.len() != segment1.capacity() - 1 {
+        segment2.push_within_capacity(0).unwrap();
+    }
 
     assert_eq!(
         segment2
@@ -189,21 +212,21 @@ fn test_truncate() {
     assert_eq!(segment.len(), 3);
 
     // Trigger with too high value
-    segment.truncate(500000);
+    segment.truncate(500000).unwrap();
     assert_eq!(counter.load(Ordering::Relaxed), 0);
     assert_eq!(segment.len(), 3);
 
     // Trigger resize
-    segment.truncate(2);
+    segment.truncate(2).unwrap();
     assert_eq!(segment.len(), 2);
     assert_eq!(counter.load(Ordering::Relaxed), 1);
 
-    segment.truncate(0);
+    segment.truncate(0).unwrap();
     assert_eq!(segment.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 3);
 
     // Trigger on empty segment
-    segment.truncate(0);
+    segment.truncate(0).unwrap();
     assert_eq!(segment.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 3);
 }
@@ -215,13 +238,13 @@ fn test_truncate_first() {
         let mut segment = TemporarySegment::<u8, _>::open_rw("test_truncate_first.seg", 5).unwrap();
         assert_eq!(&segment[..], []);
 
-        segment.truncate_first(0);
+        segment.truncate_first(0).unwrap();
         assert_eq!(&segment[..], []);
 
-        segment.truncate_first(3);
+        segment.truncate_first(3).unwrap();
         assert_eq!(&segment[..], []);
 
-        segment.truncate_first(10);
+        segment.truncate_first(10).unwrap();
         assert_eq!(&segment[..], []);
     }
 
@@ -238,35 +261,35 @@ fn test_truncate_first() {
     // Truncate 0 on with data segment
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(0);
+        segment.truncate_first(0).unwrap();
         assert_eq!(&segment[..], [1, 2, 6, 4]);
     }
 
     // Truncate half on with data segment
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(2);
+        segment.truncate_first(2).unwrap();
         assert_eq!(&segment[..], [6, 4]);
     }
 
     // Truncate almost everything on with data segment
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(3);
+        segment.truncate_first(3).unwrap();
         assert_eq!(&segment[..], [4]);
     }
 
     // Truncate everything on with data segment
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(4);
+        segment.truncate_first(4).unwrap();
         assert_eq!(&segment[..], []);
     }
 
     // Truncate above capacity on segment with data
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(500);
+        segment.truncate_first(500).unwrap();
         assert_eq!(&segment[..], []);
     }
 }
@@ -300,7 +323,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(0);
+        segment.truncate_first(0).unwrap();
         assert_eq!(counter.load(Ordering::Relaxed), 0);
 
         drop(segment);
@@ -311,7 +334,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(2);
+        segment.truncate_first(2).unwrap();
         assert_eq!(counter.load(Ordering::Relaxed), 2);
 
         drop(segment);
@@ -322,7 +345,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(3);
+        segment.truncate_first(3).unwrap();
         assert_eq!(counter.load(Ordering::Relaxed), 3);
 
         drop(segment);
@@ -333,7 +356,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(4);
+        segment.truncate_first(4).unwrap();
         assert_eq!(counter.load(Ordering::Relaxed), 4);
 
         drop(segment);
@@ -344,7 +367,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(500);
+        segment.truncate_first(500).unwrap();
         assert_eq!(counter.load(Ordering::Relaxed), 4);
 
         drop(segment);
@@ -367,12 +390,12 @@ fn test_clear() {
     assert_eq!(segment.len(), 2);
 
     // Trigger cleanup
-    segment.clear();
+    segment.clear().unwrap();
     assert_eq!(segment.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 2);
 
     // Trigger on empty segment
-    segment.clear();
+    segment.clear().unwrap();
     assert_eq!(segment.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 2);
 }

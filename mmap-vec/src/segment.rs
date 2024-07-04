@@ -20,18 +20,14 @@ use crate::{
 ///
 /// It cannot growth / shrink.
 pub struct Segment<T> {
-    pub(crate) addr: ptr::NonNull<T>,
+    pub(crate) addr: Option<ptr::NonNull<T>>,
     meta: SegmentMetadata,
     meta_path: Option<PathBuf>,
 }
 
 impl<T: std::fmt::Debug> std::fmt::Debug for Segment<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let addr = if self.addr == ptr::NonNull::dangling() {
-            ptr::null_mut()
-        } else {
-            self.addr.as_ptr()
-        };
+        let addr = self.addr.map(|p| p.as_ptr()).unwrap_or(ptr::null_mut());
 
         f.debug_struct("Segment")
             .field("addr", &addr)
@@ -60,7 +56,7 @@ impl<T> Segment<T> {
     pub const fn null() -> Self {
         check_zst::<T>();
         Self {
-            addr: ptr::NonNull::dangling(),
+            addr: None,
             meta: SegmentMetadata {
                 len: 0,
                 capacity: 0,
@@ -72,11 +68,24 @@ impl<T> Segment<T> {
     /// Memory map a segment to disk.
     ///
     /// File will be created and init with computed capacity.
-    pub fn open_rw<P: AsRef<Path>>(path: P, capacity: usize) -> io::Result<Self> {
+    pub fn open_rw<P: AsRef<Path>>(path: P, mut capacity: usize) -> io::Result<Self> {
         check_zst::<T>();
         if capacity == 0 {
             return Ok(Self::null());
         }
+
+        // try to align to page boundary
+        let page_size = page_size();
+        let rem_bytes = (capacity * std::mem::size_of::<T>()) % page_size;
+        if rem_bytes > 0 && (page_size - rem_bytes) >= std::mem::size_of::<T>() {
+            let target_bytes = capacity * std::mem::size_of::<T>();
+            let target_bytes = target_bytes + (page_size - (target_bytes % page_size));
+            let new_capacity = target_bytes / std::mem::size_of::<T>();
+            debug_assert!(new_capacity >= capacity);
+            capacity = new_capacity;
+        }
+
+        // |abcd|ef  |
 
         let file = OpenOptions::new()
             .read(true)
@@ -88,7 +97,7 @@ impl<T> Segment<T> {
         unsafe { ftruncate::<T>(&file, capacity) }?;
 
         // Map the block
-        let addr = unsafe { mmap(&file, capacity) }?;
+        let addr = Some(unsafe { mmap(&file, capacity) }?);
         Ok(Self {
             addr,
             meta: SegmentMetadata { len: 0, capacity },
@@ -104,18 +113,23 @@ impl<T> Segment<T> {
 
     /// Shortens the segment, keeping the first `new_len` elements and dropping
     /// the rest.
-    pub fn truncate(&mut self, new_len: usize) {
+    pub fn truncate(&mut self, new_len: usize) -> io::Result<()> {
         if new_len > self.meta.len as usize {
-            return;
+            return Ok(());
         }
-
-        unsafe {
+        if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
             let remaining_len = self.meta.len - new_len;
-            let items =
-                ptr::slice_from_raw_parts_mut(self.addr.as_ptr().add(new_len), remaining_len);
-            self.set_len(new_len);
-            self.sync_meta().unwrap();
-            ptr::drop_in_place(items);
+
+            unsafe {
+                self.set_len(new_len);
+
+                let items = ptr::slice_from_raw_parts_mut(addr.add(new_len), remaining_len);
+                ptr::drop_in_place(items);
+            }
+
+            self.sync_meta()
+        } else {
+            Ok(())
         }
     }
 
@@ -125,36 +139,37 @@ impl<T> Segment<T> {
     ///
     /// If delete count is greater than the segment len, then this call will be
     /// equivalent to calling `clear` function.
-    pub fn truncate_first(&mut self, delete_count: usize) {
-        let new_len = self
-            .meta
-            .len
-            .saturating_add_signed(-(delete_count as isize));
+    pub fn truncate_first(&mut self, delete_count: usize) -> io::Result<()> {
+        let new_len = self.len().saturating_add_signed(-(delete_count as isize));
         if new_len == 0 {
             self.clear()
-        } else {
+        } else if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
             unsafe {
-                let items = slice::from_raw_parts_mut(self.addr.as_ptr(), delete_count);
+                let items = slice::from_raw_parts_mut(addr, delete_count);
                 ptr::drop_in_place(items);
-                ptr::copy(
-                    self.addr.as_ptr().add(delete_count),
-                    self.addr.as_ptr(),
-                    new_len,
-                );
+                ptr::copy(addr.add(delete_count), addr, new_len);
                 self.set_len(new_len);
-                self.sync_meta().unwrap();
             }
+
+            self.sync_meta()
+        } else {
+            Ok(())
         }
     }
 
     /// Clears the segment, removing all values.
     #[inline]
-    pub fn clear(&mut self) {
-        unsafe {
-            let items = slice::from_raw_parts_mut(self.addr.as_ptr(), self.meta.len);
-            self.set_len(0);
-            self.sync_meta().unwrap();
-            ptr::drop_in_place(items);
+    pub fn clear(&mut self) -> io::Result<()> {
+        if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
+            unsafe {
+                let items = slice::from_raw_parts_mut(addr, self.meta.len);
+                self.set_len(0);
+                ptr::drop_in_place(items);
+            }
+
+            self.sync_meta()
+        } else {
+            Ok(())
         }
     }
 
@@ -181,8 +196,15 @@ impl<T> Segment<T> {
             return Err(value);
         }
 
+        // Safety: segment has unused capacity so it must be allocated
+        debug_assert!(
+            self.addr.is_some(),
+            "Segment has unused capacity but is not allocated"
+        );
+        let addr = unsafe { self.addr.unwrap_unchecked() }.as_ptr();
+
         unsafe {
-            let dst = self.addr.as_ptr().add(self.meta.len);
+            let dst = addr.add(self.meta.len);
             ptr::write(dst, value);
         }
 
@@ -195,14 +217,22 @@ impl<T> Segment<T> {
     /// Value will be return if segment is not empty.
     #[inline]
     pub fn pop(&mut self) -> Option<T> {
-        if self.meta.len == 0 {
+        if self.len() == 0 {
             return None;
         }
 
         self.meta.len -= 1;
         self.sync_meta().unwrap();
+
+        // Safety: segment is not empty => self.addr must be some address
+        debug_assert!(
+            self.addr.is_some(),
+            "Segment is not empty but is not allocated"
+        );
+        let addr = unsafe { self.addr.unwrap_unchecked() }.as_ptr();
+
         unsafe {
-            let src = self.addr.as_ptr().add(self.meta.len);
+            let src = addr.add(self.meta.len);
             Some(ptr::read(src))
         }
     }
@@ -240,13 +270,21 @@ impl<T> Segment<T> {
             ));
         }
 
+        // Safety: see assertions
+        debug_assert!(
+            self.addr.is_some(),
+            "segment has non-zero capacity but is not allocated"
+        );
+        debug_assert!(
+            other.addr.is_some(),
+            "segment has non-zero capacity but is not allocated"
+        );
+        let self_addr = unsafe { self.addr.unwrap_unchecked() }.as_ptr();
+        let other_addr = unsafe { other.addr.unwrap_unchecked() }.as_ptr();
+
         let new_len = self.len() + other.len();
         unsafe {
-            ptr::copy_nonoverlapping(
-                other.addr.as_ptr(),
-                self.addr.as_ptr().add(self.len()),
-                other.len(),
-            );
+            ptr::copy_nonoverlapping(other_addr, self_addr.add(self.len()), other.len());
             self.set_len(new_len);
             other.set_len(0);
         };
@@ -262,49 +300,51 @@ impl<T> Segment<T> {
     ///
     /// Will panic if `libc::madvise` return an error.
     pub fn advice_prefetch_all_pages(&self) {
-        if self.addr == ptr::NonNull::dangling() || self.meta.len == 0 {
-            return;
+        if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
+            let madvise_code = unsafe {
+                libc::madvise(
+                    addr.cast(),
+                    self.meta.len * mem::size_of::<T>(),
+                    libc::MADV_WILLNEED,
+                )
+            };
+            assert_eq!(
+                madvise_code,
+                0,
+                "madvise error: {}",
+                io::Error::last_os_error()
+            );
         }
-
-        let madvise_code = unsafe {
-            libc::madvise(
-                self.addr.as_ptr().cast(),
-                self.meta.len * mem::size_of::<T>(),
-                libc::MADV_WILLNEED,
-            )
-        };
-        assert_eq!(
-            madvise_code,
-            0,
-            "madvise error: {}",
-            io::Error::last_os_error()
-        );
     }
 
     /// Inform the kernel that underlying page for `index` will be access in a near future.
     ///
     /// This function is only a wrapper above `libc::madvise`.
     pub fn advice_prefetch_page_at(&self, index: usize) {
-        if self.addr == ptr::NonNull::dangling() || index >= self.meta.len {
-            return;
+        if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
+            if index >= self.meta.len {
+                return;
+            }
+
+            let page_size = page_size();
+            let page_mask = !(page_size.wrapping_add_signed(-1));
+
+            let madvise_code = unsafe {
+                libc::madvise(
+                    (addr.add(index) as usize & page_mask) as *mut libc::c_void,
+                    page_size,
+                    libc::MADV_WILLNEED,
+                )
+            };
+            assert_eq!(
+                madvise_code,
+                0,
+                "madvise error: {}",
+                io::Error::last_os_error()
+            );
         }
+    }
 
-        let page_size = page_size();
-        let page_mask = !(page_size.wrapping_add_signed(-1));
-
-        let madvise_code = unsafe {
-            libc::madvise(
-                (self.addr.as_ptr().add(index) as usize & page_mask) as *mut libc::c_void,
-                page_size,
-                libc::MADV_WILLNEED,
-            )
-        };
-        assert_eq!(
-            madvise_code,
-            0,
-            "madvise error: {}",
-            io::Error::last_os_error()
-        );
     }
 
     pub(crate) fn is_persistent(&self) -> bool {
@@ -313,8 +353,10 @@ impl<T> Segment<T> {
 
     /// Sync mmap vec to disk.
     pub(crate) fn sync(&self) -> io::Result<()> {
-        unsafe {
-            libc::msync(self.addr.as_ptr().cast(), self.meta.capacity, libc::MS_SYNC);
+        if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
+            unsafe {
+                libc::msync(addr.cast(), self.meta.capacity, libc::MS_SYNC);
+            }
         }
         self.sync_meta()?;
         Ok(())
@@ -388,30 +430,27 @@ impl<T> Deref for Segment<T> {
 
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        unsafe { slice::from_raw_parts(self.addr.as_ptr(), self.meta.len) }
+        let addr = self.addr.unwrap_or(ptr::NonNull::dangling()).as_ptr();
+        unsafe { slice::from_raw_parts(addr, self.meta.len) }
     }
 }
 
 impl<T> DerefMut for Segment<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { slice::from_raw_parts_mut(self.addr.as_ptr(), self.meta.len) }
+        let addr = self.addr.unwrap_or(ptr::NonNull::dangling()).as_ptr();
+        unsafe { slice::from_raw_parts_mut(addr, self.meta.len) }
     }
 }
 
 impl<T> Drop for Segment<T> {
     fn drop(&mut self) {
-        if self.meta.len > 0 {
+        if let Some(addr) = self.addr {
             unsafe {
-                ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
-                    self.addr.as_ptr(),
-                    self.meta.len,
-                ))
+                ptr::drop_in_place(ptr::slice_from_raw_parts_mut(addr.as_ptr(), self.meta.len))
             }
-        }
 
-        if self.addr != ptr::NonNull::dangling() {
-            unsafe { munmap(self.addr, self.meta.capacity) }.expect("unmap error");
+            unsafe { munmap(addr, self.meta.capacity) }.expect("unmap error");
         }
     }
 }
