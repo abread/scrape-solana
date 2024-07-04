@@ -1,4 +1,4 @@
-use eyre::{eyre, Context, OptionExt};
+use eyre::{eyre, Context};
 use mmap_vec::MmapVec;
 use nonmax::NonMaxU64;
 use std::{
