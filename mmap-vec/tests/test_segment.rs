@@ -115,6 +115,24 @@ fn test_open_valid_segment() {
     assert_eq!(&segment[..], &[]);
 }
 
+// can't be too big, we risk overflowing the stack
+static QUARTER_MEGABYTE: [u8; 256 * 1024] = [1u8; 256 * 1024];
+
+#[test]
+fn test_open_huge_segment() {
+    let cap = 128 * 1024 * 1024 / std::mem::size_of_val(&QUARTER_MEGABYTE);
+    let mut segment = TemporarySegment::open_rw("test_pull_push.seg", cap).unwrap();
+
+    while segment.len() < segment.capacity() {
+        segment
+            .push_within_capacity(QUARTER_MEGABYTE.clone())
+            .unwrap();
+    }
+
+    assert_eq!(segment.len(), cap);
+    assert!(segment.disk_size() >= 128 * 1024 * 1024);
+}
+
 #[test]
 fn test_copy() {
     let mut segment1 = TemporarySegment::open_rw("test_copy_1.seg", 2).unwrap();
