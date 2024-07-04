@@ -57,6 +57,16 @@ impl Db {
         db.heal(&mut out).wrap_err("Failed to auto-heal DB")?;
         writeln!(out, "DB healed...")?;
 
+        write!(
+            out,
+            "loaded {} blocks, {} txs, {} accounts, {}B of tx data and {}B of account data",
+            db.block_records.len(),
+            db.tx_records.len(),
+            db.account_records.len(),
+            db.tx_data.len(),
+            db.account_data.len()
+        )?;
+
         Ok(db)
     }
 
