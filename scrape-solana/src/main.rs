@@ -7,7 +7,10 @@ use std::{
     ops::Range,
     path::PathBuf,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -81,12 +84,10 @@ fn main() -> Result<()> {
 
     let db = Arc::new(Mutex::new(db));
 
-    let db2 = Arc::clone(&db); // capture db
-    ctrlc::set_handler(move || {
-        println!("saving db...");
-        db2.lock().unwrap().sync().unwrap();
-        println!("db saved, exiting");
-        std::process::exit(0);
+    let should_exit = &*Box::leak(Box::new(AtomicBool::new(false)));
+    ctrlc::set_handler(|| {
+        println!("received exit signal");
+        should_exit.store(true, Ordering::Relaxed);
     })
     .wrap_err("could not set Ctrl+C handler")?;
 
@@ -131,6 +132,10 @@ fn main() -> Result<()> {
         .rev()
         .step_by(args.shard_config.n as usize)
     {
+        if should_exit.load(Ordering::Relaxed) {
+            break;
+        }
+
         // retry after reqwest retries
         let mut larger_timeout = Duration::from_secs(1);
         let block = loop {
@@ -189,6 +194,7 @@ fn main() -> Result<()> {
         std::thread::sleep(MIN_WAIT - save_dur.min(MIN_WAIT));
     }
 
+    println!("done");
     Ok(())
 }
 
