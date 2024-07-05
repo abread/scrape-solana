@@ -57,11 +57,11 @@ impl Db {
             account_index,
         };
 
-        writeln!(out, "Auto-healing DB...")?;
+        let _ = writeln!(out, "Auto-healing DB...");
         db.heal(&mut out).wrap_err("Failed to auto-heal DB")?;
-        writeln!(out, "DB healed...")?;
+        let _ = writeln!(out, "DB healed");
 
-        write!(
+        let _ = writeln!(
             out,
             "loaded {} blocks, {} txs, {} accounts, {}B of tx data and {}B of account data",
             db.block_records.len(),
@@ -69,7 +69,7 @@ impl Db {
             db.account_records.len(),
             db.tx_data.len(),
             db.account_data.len()
-        )?;
+        );
 
         Ok(db)
     }
@@ -98,7 +98,7 @@ impl Db {
 
                 if expected_len > self.tx_records.len() {
                     let slot = b.slot;
-                    let _ = write!(
+                    let _ = writeln!(
                         out,
                         "WARNING: dropping block {}, it references txs that are not in storage",
                         slot
@@ -207,12 +207,17 @@ impl Db {
     fn is_account_index_healthy(&self, out: &mut impl io::Write) -> bool {
         // HACK: only checks a few elements
         if self.account_index.len() != self.account_records.len() {
-            let _ = writeln!(out, "account index and record sizes do not match");
+            let _ = writeln!(
+                out,
+                "account index and record sizes do not match: {} != {}",
+                self.account_index.len(),
+                self.account_records.len()
+            );
             return false;
         }
 
         let mut rng = rand::thread_rng();
-        const N_ELEMENTS_RANDOM: usize = 5;
+        const N_ELEMENTS_RANDOM: usize = 100;
         const N_ELEMENTS_ENDS: usize = 5;
 
         let elements_to_check = self
