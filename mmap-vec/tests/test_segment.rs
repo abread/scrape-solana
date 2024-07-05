@@ -230,21 +230,21 @@ fn test_truncate() {
     assert_eq!(segment.len(), 3);
 
     // Trigger with too high value
-    segment.truncate(500000).unwrap();
+    segment.truncate(500000);
     assert_eq!(counter.load(Ordering::Relaxed), 0);
     assert_eq!(segment.len(), 3);
 
     // Trigger resize
-    segment.truncate(2).unwrap();
+    segment.truncate(2);
     assert_eq!(segment.len(), 2);
     assert_eq!(counter.load(Ordering::Relaxed), 1);
 
-    segment.truncate(0).unwrap();
+    segment.truncate(0);
     assert_eq!(segment.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 3);
 
     // Trigger on empty segment
-    segment.truncate(0).unwrap();
+    segment.truncate(0);
     assert_eq!(segment.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 3);
 }
@@ -256,13 +256,13 @@ fn test_truncate_first() {
         let mut segment = TemporarySegment::<u8, _>::open_rw("test_truncate_first.seg", 5).unwrap();
         assert_eq!(&segment[..], []);
 
-        segment.truncate_first(0).unwrap();
+        segment.truncate_first(0);
         assert_eq!(&segment[..], []);
 
-        segment.truncate_first(3).unwrap();
+        segment.truncate_first(3);
         assert_eq!(&segment[..], []);
 
-        segment.truncate_first(10).unwrap();
+        segment.truncate_first(10);
         assert_eq!(&segment[..], []);
     }
 
@@ -279,35 +279,35 @@ fn test_truncate_first() {
     // Truncate 0 on with data segment
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(0).unwrap();
+        segment.truncate_first(0);
         assert_eq!(&segment[..], [1, 2, 6, 4]);
     }
 
     // Truncate half on with data segment
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(2).unwrap();
+        segment.truncate_first(2);
         assert_eq!(&segment[..], [6, 4]);
     }
 
     // Truncate almost everything on with data segment
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(3).unwrap();
+        segment.truncate_first(3);
         assert_eq!(&segment[..], [4]);
     }
 
     // Truncate everything on with data segment
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(4).unwrap();
+        segment.truncate_first(4);
         assert_eq!(&segment[..], []);
     }
 
     // Truncate above capacity on segment with data
     {
         let mut segment = build_test_seg();
-        segment.truncate_first(500).unwrap();
+        segment.truncate_first(500);
         assert_eq!(&segment[..], []);
     }
 }
@@ -341,7 +341,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(0).unwrap();
+        segment.truncate_first(0);
         assert_eq!(counter.load(Ordering::Relaxed), 0);
 
         drop(segment);
@@ -352,7 +352,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(2).unwrap();
+        segment.truncate_first(2);
         assert_eq!(counter.load(Ordering::Relaxed), 2);
 
         drop(segment);
@@ -363,7 +363,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(3).unwrap();
+        segment.truncate_first(3);
         assert_eq!(counter.load(Ordering::Relaxed), 3);
 
         drop(segment);
@@ -374,7 +374,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(4).unwrap();
+        segment.truncate_first(4);
         assert_eq!(counter.load(Ordering::Relaxed), 4);
 
         drop(segment);
@@ -385,7 +385,7 @@ fn test_drop_with_truncate_first() {
     {
         let mut segment = build_test_seg(counter.clone());
 
-        segment.truncate_first(500).unwrap();
+        segment.truncate_first(500);
         assert_eq!(counter.load(Ordering::Relaxed), 4);
 
         drop(segment);
@@ -408,12 +408,12 @@ fn test_clear() {
     assert_eq!(segment.len(), 2);
 
     // Trigger cleanup
-    segment.clear().unwrap();
+    segment.clear();
     assert_eq!(segment.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 2);
 
     // Trigger on empty segment
-    segment.clear().unwrap();
+    segment.clear();
     assert_eq!(segment.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 2);
 }

@@ -75,22 +75,19 @@ impl Db {
     }
 
     fn heal(&mut self, mut out: impl io::Write) -> eyre::Result<()> {
-        let r1 = self.heal_tx_records(&mut out);
-        let r2 = self.heal_tx_data(&mut out);
-        let r3 = self.heal_account_data(&mut out);
-        let r4 = self.heal_account_index(&mut out);
+        self.heal_tx_records(&mut out);
+        self.heal_tx_data(&mut out);
+        self.heal_account_data(&mut out);
+        let r = self.heal_account_index(&mut out);
         self.sync()?;
 
         // handle errors *after* sync
-        r1?;
-        r2?;
-        r3?;
-        r4?;
+        r?;
 
         Ok(())
     }
 
-    fn heal_tx_records(&mut self, mut out: impl io::Write) -> eyre::Result<()> {
+    fn heal_tx_records(&mut self, mut out: impl io::Write) {
         // HACK: assumes blocks and tx records are ordered in decreasing block nums
 
         // find expected length of tx_records
@@ -120,15 +117,11 @@ impl Db {
                 "dropping {} txs (possible partial fetch)",
                 self.tx_records.len() - expected_len,
             );
-            self.tx_records
-                .truncate(expected_len)
-                .wrap_err("failed to prune tx records from partially processed block")?;
+            self.tx_records.truncate(expected_len);
         }
-
-        Ok(())
     }
 
-    fn heal_tx_data(&mut self, mut out: impl io::Write) -> eyre::Result<()> {
+    fn heal_tx_data(&mut self, mut out: impl io::Write) {
         // HACK: assumes tx records and data are contiguous and in same order
 
         // find expected length of tx_records
@@ -148,21 +141,16 @@ impl Db {
 
         // prune possibly partially fetched tx_data
         if expected_len != self.tx_data.len() {
-            let r2 = writeln!(
+            let _ = writeln!(
                 out,
                 "dropping {} bytes from tx data (possible partial fetch)",
                 self.tx_data.len() - expected_len,
             );
-            self.tx_data
-                .truncate(expected_len)
-                .wrap_err("failed to prune tx data from partially processed block")?;
-            r2?; // error not critical
+            self.tx_data.truncate(expected_len);
         }
-
-        Ok(())
     }
 
-    fn heal_account_data(&mut self, mut out: impl io::Write) -> eyre::Result<()> {
+    fn heal_account_data(&mut self, mut out: impl io::Write) {
         // HACK: assumes account records and data are contiguous and in same order
 
         // find expected length of account_records
@@ -185,25 +173,18 @@ impl Db {
 
         // prune possibly partially fetched account_data
         if expected_len != self.account_data.len() {
-            let r2 = writeln!(
+            let _ = writeln!(
                 out,
                 "dropping {} bytes from account data (possible partial fetch)",
                 self.account_data.len() - expected_len,
             );
-            self.account_data
-                .truncate(expected_len)
-                .wrap_err("failed to prune account data from partially processed block")?;
-            r2?; // error not critical
+            self.account_data.truncate(expected_len);
         }
-
-        Ok(())
     }
 
     fn heal_account_index(&mut self, mut out: impl io::Write) -> eyre::Result<()> {
         if !self.is_account_index_healthy(&mut out) {
-            self.account_index
-                .clear()
-                .wrap_err("failed to clear account index for reconstruction")?;
+            self.account_index.clear();
 
             for (idx, record) in self.account_records.iter().enumerate() {
                 let id = record.id.clone();
@@ -434,9 +415,7 @@ impl Db {
 
         if let Err(e) = self.account_records.push(account_record) {
             // roll back account data storage: we don't error out on account storage
-            if let Err(e) = self.account_data.truncate(start_idx as usize) {
-                eprintln!("error rolling back store_new_account (after failing to store record, while removing data): {:?}", e);
-            }
+            self.account_data.truncate(start_idx as usize);
 
             return Err(e).wrap_err("error storing account record");
         }
@@ -447,16 +426,9 @@ impl Db {
             .is_some()
         {
             // roll back account data storage: we don't error out on account storage
-            if let Err(e) = self
-                .account_records
-                .truncate(self.account_records.len() - 1)
-            {
-                eprintln!("error rolling back store_new_account (after failing to update index, while removing record): {:?}", e);
-            }
-
-            if let Err(e) = self.account_data.truncate(start_idx as usize) {
-                eprintln!("error rolling back store_new_account (after failing to update index, while removing data): {:?}", e);
-            }
+            self.account_records
+                .truncate(self.account_records.len() - 1);
+            self.account_data.truncate(start_idx as usize);
 
             return Err(eyre!("account {id} already present in index"));
         }
@@ -473,6 +445,27 @@ impl Db {
             ($name:ident) => {
                 self.$name
                     .sync()
+                    .wrap_err(concat!("could not sync table: ", stringify!($name)))?;
+            };
+        }
+
+        sync_table!(account_data);
+        sync_table!(account_records);
+        sync_table!(account_index);
+
+        sync_table!(tx_data);
+        sync_table!(tx_records);
+
+        sync_table!(block_records);
+
+        Ok(())
+    }
+
+    pub fn force_sync(&mut self) -> eyre::Result<()> {
+        macro_rules! sync_table {
+            ($name:ident) => {
+                self.$name
+                    .force_sync()
                     .wrap_err(concat!("could not sync table: ", stringify!($name)))?;
             };
         }

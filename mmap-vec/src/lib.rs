@@ -199,7 +199,7 @@ where
     /// Shortens the vec, keeping the first `new_len` elements and dropping
     /// the rest.
     #[inline(always)]
-    pub fn truncate(&mut self, new_len: usize) -> io::Result<()> {
+    pub fn truncate(&mut self, new_len: usize) {
         self.segment.truncate(new_len)
     }
 
@@ -227,13 +227,13 @@ where
     /// assert_eq!(&v[..], []);
     /// ```
     #[inline(always)]
-    pub fn truncate_first(&mut self, delete_count: usize) -> io::Result<()> {
+    pub fn truncate_first(&mut self, delete_count: usize) {
         self.segment.truncate_first(delete_count)
     }
 
     /// Clears the vec, removing all values.
     #[inline(always)]
-    pub fn clear(&mut self) -> io::Result<()> {
+    pub fn clear(&mut self) {
         self.segment.clear()
     }
 
@@ -311,8 +311,6 @@ where
         let new_capacity = current_len + additional;
 
         if self.capacity() < new_capacity {
-            self.segment.sync_meta()?;
-
             // Map again path with a new segment but with bigger capacity.
             let new_segment = Segment::<T>::open_rw(&self.path, new_capacity)?;
             debug_assert!(new_segment.capacity() > self.segment.capacity());
@@ -376,18 +374,17 @@ where
     }
 
     /// Sync to disk.
-    pub fn sync(&self) -> io::Result<()> {
+    pub fn sync(&mut self) -> io::Result<()> {
         self.segment.sync()
     }
 
-    /// Sync metadata to disk.
-    /// Should be used for implementing crash-consistent collections on top of MmapVec.
-    pub fn sync_meta(&self) -> io::Result<()> {
-        self.segment.sync_meta()
+    /// Force sync to disk.
+    pub fn force_sync(&mut self) -> io::Result<()> {
+        self.segment.force_sync()
     }
 
     /// Drop mmap, explicitly persisting it to disk.
-    pub fn persist(self) -> io::Result<()> {
+    pub fn persist(mut self) -> io::Result<()> {
         assert!(
             self.segment.is_persistent(),
             "map is not named, temporary file will be deleted"

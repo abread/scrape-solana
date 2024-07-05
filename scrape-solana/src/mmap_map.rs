@@ -16,6 +16,7 @@ type MmapMapInner<K, V> = BVecTreeMap<MmapVec<BVecTreeNode<K, V>>, K, V>;
 pub struct MmapMap<K, V> {
     map: MmapMapInner<K, V>,
     meta_storage: MapMetaStorage,
+    needs_sync: bool,
 }
 
 impl<K: Unpin + Ord + Debug, V: Unpin + Debug> MmapMap<K, V> {
@@ -35,7 +36,11 @@ impl<K: Unpin + Ord + Debug, V: Unpin + Debug> MmapMap<K, V> {
             })
         };
 
-        Ok(Self { map, meta_storage })
+        Ok(Self {
+            map,
+            meta_storage,
+            needs_sync: false,
+        })
     }
 }
 
@@ -52,9 +57,9 @@ where
     K: Unpin + Ord + Debug,
     V: Unpin + Debug,
 {
-    pub fn clear(&mut self) -> eyre::Result<()> {
+    pub fn clear(&mut self) -> () {
+        self.needs_sync = true;
         self.map.clear();
-        self.sync_meta()
     }
 
     pub fn get(&self, key: &K) -> Option<&V> {
@@ -62,37 +67,39 @@ where
     }
 
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.needs_sync = true;
         self.map.get_mut(key)
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.needs_sync = true;
         self.map.insert(key, value)
     }
 
-    pub fn remove(&mut self, key: &K) -> eyre::Result<Option<V>> {
-        let res = self.map.remove(key);
-        self.sync_meta()?;
-        Ok(res)
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.needs_sync = true;
+        self.map.remove(key)
     }
 
-    pub fn remove_entry(&mut self, key: &K) -> eyre::Result<Option<(K, V)>> {
-        let res = self.map.remove_entry(key);
-        self.sync_meta()?;
-        Ok(res)
+    pub fn remove_entry(&mut self, key: &K) -> Option<(K, V)> {
+        self.needs_sync = true;
+        self.map.remove_entry(key)
     }
 }
 
 impl<K: Unpin, V: Unpin> MmapMap<K, V> {
-    fn sync_meta(&mut self) -> eyre::Result<()> {
-        self.map.inner().tree_buf.sync_meta()?;
-        self.meta_storage.write(self.map.inner())?;
+    pub fn sync(&mut self) -> eyre::Result<()> {
+        unsafe { self.map.inner_mut() }.tree_buf.sync()?;
+        if self.needs_sync {
+            self.meta_storage.write(self.map.inner())?;
+        }
+        self.needs_sync = false;
         Ok(())
     }
-
-    pub fn sync(&mut self) -> eyre::Result<()> {
-        self.map.inner().tree_buf.sync()?;
-        self.meta_storage.write(self.map.inner())?;
-        Ok(())
+    pub fn force_sync(&mut self) -> eyre::Result<()> {
+        self.needs_sync = true;
+        unsafe { self.map.inner_mut() }.tree_buf.force_sync()?;
+        self.sync()
     }
 }
 

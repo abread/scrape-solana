@@ -142,21 +142,21 @@ fn test_truncate() {
     assert_eq!(v.len(), 3);
 
     // Trigger with too high value
-    v.truncate(500000).unwrap();
+    v.truncate(500000);
     assert_eq!(counter.load(Ordering::Relaxed), 0);
     assert_eq!(v.len(), 3);
 
     // Trigger resize
-    v.truncate(2).unwrap();
+    v.truncate(2);
     assert_eq!(v.len(), 2);
     assert_eq!(counter.load(Ordering::Relaxed), 1);
 
-    v.truncate(0).unwrap();
+    v.truncate(0);
     assert_eq!(v.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 3);
 
     // Trigger on empty segment
-    v.truncate(0).unwrap();
+    v.truncate(0);
     assert_eq!(v.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 3);
 }
@@ -176,28 +176,28 @@ fn test_truncate_first() {
     // Truncate 0
     {
         let mut v = build_vec();
-        v.truncate_first(0).unwrap();
+        v.truncate_first(0);
         assert_eq!(&v[..], [8, 5, 3, 12]);
     }
 
     // Truncate half
     {
         let mut v = build_vec();
-        v.truncate_first(2).unwrap();
+        v.truncate_first(2);
         assert_eq!(&v[..], [3, 12]);
     }
 
     // Truncate len
     {
         let mut v = build_vec();
-        v.truncate_first(v.len()).unwrap();
+        v.truncate_first(v.len());
         assert_eq!(&v[..], []);
     }
 
     // Truncate too much
     {
         let mut v = build_vec();
-        v.truncate_first(v.len() + 1000).unwrap();
+        v.truncate_first(v.len() + 1000);
         assert_eq!(&v[..], []);
     }
 }
@@ -213,12 +213,12 @@ fn test_clear() {
     assert_eq!(v.len(), 2);
 
     // Trigger cleanup
-    v.clear().unwrap();
+    v.clear();
     assert_eq!(v.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 2);
 
     // Trigger on empty segment
-    v.clear().unwrap();
+    v.clear();
     assert_eq!(v.len(), 0);
     assert_eq!(counter.load(Ordering::Relaxed), 2);
 }

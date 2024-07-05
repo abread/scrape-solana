@@ -1,4 +1,5 @@
 use eyre::{eyre, Context, Result};
+use rand::Rng;
 use scrape_solana::{AccountID, Db};
 use std::{
     fmt::Debug,
@@ -94,7 +95,9 @@ fn main() -> Result<()> {
         println!("saving db...");
         db2.lock().unwrap().sync().unwrap();
         println!("db saved");
-        std::thread::sleep(Duration::from_secs(5))
+        std::thread::sleep(Duration::from_secs(
+            rand::thread_rng().gen_range(10..20) * 60,
+        ))
     });
 
     std::thread::sleep(Duration::from_millis(500)); // ensure we respect rate limits

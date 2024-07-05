@@ -702,6 +702,10 @@ impl<S, K, V> BVecTreeMap<S, K, V> {
         &self.0
     }
 
+    pub unsafe fn inner_mut(&mut self) -> &mut BVecTreeMapData<S, K, V> {
+        &mut self.0
+    }
+
     pub fn into_inner(self) -> BVecTreeMapData<S, K, V> {
         self.0
     }

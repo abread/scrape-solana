@@ -26,6 +26,8 @@ pub struct Segment<T> {
     pub(crate) addr: Option<ptr::NonNull<T>>,
     meta: SegmentMetadata,
     meta_path: Option<PathBuf>,
+    needs_sync: bool,
+    meta_needs_sync: bool,
 }
 
 impl<T: std::fmt::Debug> std::fmt::Debug for Segment<T> {
@@ -65,6 +67,8 @@ impl<T> Segment<T> {
                 capacity: 0,
             },
             meta_path: None,
+            needs_sync: false,
+            meta_needs_sync: false,
         }
     }
 
@@ -107,6 +111,8 @@ impl<T> Segment<T> {
             addr,
             meta: SegmentMetadata { len: 0, capacity },
             meta_path: None,
+            meta_needs_sync: false,
+            needs_sync: false,
         })
     }
 
@@ -118,10 +124,11 @@ impl<T> Segment<T> {
 
     /// Shortens the segment, keeping the first `new_len` elements and dropping
     /// the rest.
-    pub fn truncate(&mut self, new_len: usize) -> io::Result<()> {
+    pub fn truncate(&mut self, new_len: usize) {
         if new_len > self.meta.len as usize {
-            return Ok(());
+            return;
         }
+
         if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
             let remaining_len = self.meta.len - new_len;
 
@@ -132,9 +139,7 @@ impl<T> Segment<T> {
                 ptr::drop_in_place(items);
             }
 
-            self.sync_meta()
-        } else {
-            Ok(())
+            self.meta_needs_sync = true;
         }
     }
 
@@ -144,10 +149,10 @@ impl<T> Segment<T> {
     ///
     /// If delete count is greater than the segment len, then this call will be
     /// equivalent to calling `clear` function.
-    pub fn truncate_first(&mut self, delete_count: usize) -> io::Result<()> {
+    pub fn truncate_first(&mut self, delete_count: usize) {
         let new_len = self.len().saturating_add_signed(-(delete_count as isize));
         if new_len == 0 {
-            self.clear()
+            self.clear();
         } else if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
             unsafe {
                 let items = slice::from_raw_parts_mut(addr, delete_count);
@@ -156,15 +161,13 @@ impl<T> Segment<T> {
                 self.set_len(new_len);
             }
 
-            self.sync_meta()
-        } else {
-            Ok(())
+            self.meta_needs_sync = true;
         }
     }
 
     /// Clears the segment, removing all values.
     #[inline]
-    pub fn clear(&mut self) -> io::Result<()> {
+    pub fn clear(&mut self) {
         if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
             unsafe {
                 let items = slice::from_raw_parts_mut(addr, self.meta.len);
@@ -172,9 +175,7 @@ impl<T> Segment<T> {
                 ptr::drop_in_place(items);
             }
 
-            self.sync_meta()
-        } else {
-            Ok(())
+            self.meta_needs_sync = true;
         }
     }
 
@@ -184,6 +185,7 @@ impl<T> Segment<T> {
     pub unsafe fn set_len(&mut self, new_len: usize) {
         debug_assert!(new_len <= self.capacity());
         self.meta.len = new_len;
+        self.meta_needs_sync = true;
     }
 
     /// Bytes use on disk for this segment.
@@ -214,6 +216,8 @@ impl<T> Segment<T> {
         }
 
         self.meta.len += 1;
+        self.meta_needs_sync = true;
+        self.needs_sync = true;
         Ok(())
     }
 
@@ -227,7 +231,7 @@ impl<T> Segment<T> {
         }
 
         self.meta.len -= 1;
-        self.sync_meta().unwrap();
+        self.meta_needs_sync = true;
 
         // Safety: segment is not empty => self.addr must be some address
         debug_assert!(
@@ -294,6 +298,8 @@ impl<T> Segment<T> {
             other.set_len(0);
         };
 
+        self.meta_needs_sync = true;
+        self.needs_sync = true;
         Ok(())
     }
 
@@ -356,6 +362,7 @@ impl<T> Segment<T> {
 
     pub(crate) fn set_meta_path(&mut self, path: Option<PathBuf>) {
         self.meta_path = path;
+        self.meta_needs_sync = true;
     }
 
     pub(crate) fn is_persistent(&self) -> bool {
@@ -363,28 +370,37 @@ impl<T> Segment<T> {
     }
 
     /// Sync mmap vec to disk.
-    pub(crate) fn sync(&self) -> io::Result<()> {
+    pub(crate) fn sync(&mut self) -> io::Result<()> {
         if let Some(addr) = self.addr.map(|p| p.as_ptr()) {
-            unsafe {
-                libc::msync(addr.cast(), self.meta.capacity, libc::MS_SYNC);
+            if self.needs_sync {
+                let ret = unsafe { libc::msync(addr.cast(), self.meta.capacity, libc::MS_SYNC) };
+
+                if ret != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+
+                self.needs_sync = false;
             }
         }
-        self.sync_meta()?;
+
+        if let Some(p) = &self.meta_path {
+            if self.meta_needs_sync {
+                let mut f = fs::OpenOptions::new().create(true).write(true).open(p)?;
+
+                let m: SegmentMetadataRepr = self.meta.clone().into();
+                f.write_all(m.bytes())?;
+                f.flush()?;
+            }
+
+            self.meta_needs_sync = false;
+        }
+
         Ok(())
     }
 
-    /// Sync mmap vec metadata (len, capacity) to disk.
-    /// Should be used for implementing crash-consistent collections on top of MmapVec.
-    pub(crate) fn sync_meta(&self) -> io::Result<()> {
-        if let Some(p) = &self.meta_path {
-            let mut f = fs::OpenOptions::new().create(true).write(true).open(p)?;
-
-            let m: SegmentMetadataRepr = self.meta.clone().into();
-            f.write_all(m.bytes())?;
-            f.flush()?;
-        }
-
-        Ok(())
+    pub(crate) fn force_sync(&mut self) -> io::Result<()> {
+        self.needs_sync = true;
+        self.sync()
     }
 }
 
