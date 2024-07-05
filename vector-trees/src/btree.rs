@@ -260,6 +260,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
     pub fn clear(&mut self) {
         self.0.root = None;
         self.0.free_head = None;
+        self.0.len = 0;
         self.0.tree_buf.clear();
     }
 
