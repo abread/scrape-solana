@@ -280,6 +280,30 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         }
     }
 
+    pub fn get(&self, key: &K) -> Option<&V> {
+        if let Some(idx) = self.0.root {
+            let mut cur_node = idx;
+
+            loop {
+                let node = self.get_node(cur_node);
+
+                let (idx, exact) = node.find_key_id(key);
+
+                if exact {
+                    return Some(&self.get_node(cur_node).keys[idx].as_ref().unwrap().1);
+                }
+
+                if node.leaf {
+                    break;
+                }
+
+                cur_node = node.children[idx].unwrap();
+            }
+        }
+
+        None
+    }
+
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         if let Some(idx) = self.0.root {
             let mut cur_node = idx;

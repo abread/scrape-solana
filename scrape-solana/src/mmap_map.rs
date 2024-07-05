@@ -57,6 +57,10 @@ where
         self.sync_meta()
     }
 
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         self.map.get_mut(key)
     }
