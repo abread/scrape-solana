@@ -1,6 +1,7 @@
 use eyre::{eyre, Context};
 use mmap_vec::MmapVec;
 use nonmax::NonMaxU64;
+use rand::Rng;
 use std::{
     collections::BTreeSet,
     fmt::{Debug, Display},
@@ -21,8 +22,9 @@ pub struct Db {
     block_records: MmapVec<BlockRecord>,
     tx_records: MmapVec<TxRecord>,
     tx_data: MmapVec<u8>,
-    account_records: MmapMap<AccountID, AccountRecord>,
+    account_records: MmapVec<AccountRecord>,
     account_data: MmapVec<u8>,
+    account_index: MmapMap<AccountID, u64>,
 }
 
 impl Db {
@@ -40,10 +42,11 @@ impl Db {
         open_vec_table!(tx_records);
         open_vec_table!(tx_data);
         open_vec_table!(account_data);
+        open_vec_table!(account_records);
 
         // build account records map from underlying vec
-        let account_records = unsafe { MmapMap::with_name(root_path.join("account_records")) }
-            .wrap_err("Failed to open table: account_records")?;
+        let account_index = unsafe { MmapMap::with_name(root_path.join("account_index")) }
+            .wrap_err("Failed to open table: account_index")?;
 
         let mut db = Db {
             block_records,
@@ -51,6 +54,7 @@ impl Db {
             tx_data,
             account_records,
             account_data,
+            account_index,
         };
 
         writeln!(out, "Auto-healing DB...")?;
@@ -72,12 +76,16 @@ impl Db {
 
     fn heal(&mut self, mut out: impl io::Write) -> eyre::Result<()> {
         let r1 = self.heal_tx_records(&mut out);
-        let r2 = self.heal_tx_data(out);
+        let r2 = self.heal_tx_data(&mut out);
+        let r3 = self.heal_account_data(&mut out);
+        let r4 = self.heal_account_index(&mut out);
         self.sync()?;
 
         // handle errors *after* sync
         r1?;
         r2?;
+        r3?;
+        r4?;
 
         Ok(())
     }
@@ -90,13 +98,24 @@ impl Db {
         for b in self.block_records.iter().rev() {
             if b.tx_count != u64::MAX {
                 expected_len = (b.tx_start_idx + b.tx_count) as usize;
+
+                if expected_len > self.tx_records.len() {
+                    let slot = b.slot;
+                    let _ = write!(
+                        out,
+                        "WARNING: dropping block {}, it references txs that are not in storage",
+                        slot
+                    );
+                    continue;
+                }
+
                 break;
             }
         }
 
         // prune possibly partially fetched tx_records
         if expected_len != self.tx_records.len() {
-            let r1 = writeln!(
+            let _ = writeln!(
                 out,
                 "dropping {} txs (possible partial fetch)",
                 self.tx_records.len() - expected_len,
@@ -104,7 +123,6 @@ impl Db {
             self.tx_records
                 .truncate(expected_len)
                 .wrap_err("failed to prune tx records from partially processed block")?;
-            r1?; // error not critical
         }
 
         Ok(())
@@ -115,9 +133,15 @@ impl Db {
 
         // find expected length of tx_records
         let mut expected_len = self.tx_data.len();
-        for tx in self.tx_records.iter().rev() {
+        for (i, tx) in self.tx_records.iter().enumerate().rev() {
             if tx.data_sz != u32::MAX {
                 expected_len = (tx.data_start_idx + tx.data_sz as u64) as usize;
+
+                if expected_len > self.tx_data.len() {
+                    eprintln!("WARNING: tx #{i} had no data saved, dropping");
+                    continue;
+                }
+
                 break;
             }
         }
@@ -136,6 +160,101 @@ impl Db {
         }
 
         Ok(())
+    }
+
+    fn heal_account_data(&mut self, mut out: impl io::Write) -> eyre::Result<()> {
+        // HACK: assumes account records and data are contiguous and in same order
+
+        // find expected length of account_records
+        let mut expected_len = self.account_data.len();
+        for (idx, account) in self.account_records.iter().enumerate().rev() {
+            if account.data_sz != u32::MAX {
+                expected_len = (account.data_start_idx + account.data_sz as u64) as usize;
+
+                if expected_len > self.account_data.len() {
+                    eprintln!(
+                        "WARNING: account {:?}(idx={idx}) had no data saved, dropping",
+                        account.id
+                    );
+                    continue;
+                }
+
+                break;
+            }
+        }
+
+        // prune possibly partially fetched account_data
+        if dbg!(expected_len) != dbg!(self.account_data.len()) {
+            let r2 = writeln!(
+                out,
+                "dropping {} bytes from account data (possible partial fetch)",
+                self.account_data.len() - expected_len,
+            );
+            self.account_data
+                .truncate(expected_len)
+                .wrap_err("failed to prune account data from partially processed block")?;
+            r2?; // error not critical
+        }
+
+        Ok(())
+    }
+
+    fn heal_account_index(&mut self, mut out: impl io::Write) -> eyre::Result<()> {
+        if !self.is_account_index_healthy(&mut out) {
+            self.account_index
+                .clear()
+                .wrap_err("failed to clear account index for reconstruction")?;
+
+            for (idx, record) in self.account_records.iter().enumerate() {
+                let id = record.id.clone();
+                self.account_index
+                    .insert(id, idx as u64)
+                    .map_or(Ok(()), |existing| {
+                        Err(eyre!(
+                            "duplicate account record: {:?} at indices {} and {}",
+                            record.id.clone(),
+                            existing,
+                            idx
+                        ))
+                    })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_account_index_healthy(&self, out: &mut impl io::Write) -> bool {
+        // HACK: only checks a few elements
+        if self.account_index.len() != self.account_records.len() {
+            let _ = writeln!(out, "account index and record sizes do not match");
+            return false;
+        }
+
+        let mut rng = rand::thread_rng();
+        const N_ELEMENTS_RANDOM: usize = 5;
+        const N_ELEMENTS_ENDS: usize = 5;
+
+        let elements_to_check = (0..N_ELEMENTS_ENDS)
+            .map(|idx| idx)
+            .chain(
+                (0..N_ELEMENTS_ENDS)
+                    .map(|offset| self.account_records.len().saturating_sub(offset + 1))
+                    .filter(|&idx| idx > N_ELEMENTS_ENDS),
+            )
+            .chain((0..N_ELEMENTS_RANDOM).map(|_| rng.gen_range(0..self.account_records.len())));
+
+        for idx in elements_to_check {
+            let id = self.account_records[idx].id.clone();
+            if self.account_index.get(&id).copied() != Some(idx as u64) {
+                let _ = writeln!(
+                    out,
+                    "found account storage inconsistency for id={id:?},idx={idx}"
+                );
+                return false;
+            }
+        }
+
+        true
     }
 
     pub fn store_block(
@@ -218,18 +337,21 @@ impl Db {
 
             self.tx_records.push(tx_rec).wrap_err("could not save tx")?;
         }
+        self.tx_data.sync()?;
+        self.tx_records.sync()?;
 
         match self
             .block_records
             .push(BlockRecord {
                 slot,
+                height: block.block_height.unwrap_or(0),
                 ts: block.block_time.and_then(NonZeroI64::new),
                 tx_start_idx,
                 tx_count: block
                     .transactions
                     .as_ref()
                     .map(|v| v.len() as u64)
-                    .unwrap_or(u64::MAX),
+                    .unwrap_or(0),
             })
             .wrap_err("error storing block")
         {
@@ -243,6 +365,7 @@ impl Db {
                 return Err(e);
             }
         }
+        self.block_records.sync()?;
 
         let accounts_to_fetch = accounts_to_fetch
             .into_iter()
@@ -260,12 +383,15 @@ impl Db {
                 }
             }
         }
+        self.account_data.sync()?;
+        self.account_records.sync()?;
+        self.account_index.sync()?;
 
         Ok(())
     }
 
     pub fn has_account(&self, id: &AccountID) -> bool {
-        self.account_records.contains_key(id)
+        self.account_index.contains_key(id)
     }
 
     pub fn store_new_account(
@@ -286,24 +412,45 @@ impl Db {
         }
 
         let account_record = AccountRecord {
+            id: id.clone(),
             owner: AccountID(account.owner.to_bytes()),
             min_height: block_range.start,
             max_height: block_range.end,
-            start_idx,
-            sz,
+            data_start_idx: start_idx,
+            data_sz: sz,
             is_executable: account.executable,
         };
 
-        if self.account_records.insert(id, account_record).is_some() {
+        if let Err(e) = self.account_records.push(account_record) {
             // roll back account data storage: we don't error out on account storage
             if let Err(e) = self.account_data.truncate(start_idx as usize) {
-                eprintln!("error rolling back store_new_account: {:?}", e);
+                eprintln!("error rolling back store_new_account (after failing to store record, while removing data): {:?}", e);
             }
 
-            Err(eyre::eyre!("account already exists"))
-        } else {
-            Ok(())
+            return Err(e).wrap_err("error storing account record");
         }
+
+        if self
+            .account_index
+            .insert(id.clone(), self.account_records.len() as u64)
+            .is_some()
+        {
+            // roll back account data storage: we don't error out on account storage
+            if let Err(e) = self
+                .account_records
+                .truncate(self.account_records.len() - 1)
+            {
+                eprintln!("error rolling back store_new_account (after failing to update index, while removing record): {:?}", e);
+            }
+
+            if let Err(e) = self.account_data.truncate(start_idx as usize) {
+                eprintln!("error rolling back store_new_account (after failing to update index, while removing data): {:?}", e);
+            }
+
+            return Err(eyre!("account {id} already present in index"));
+        }
+
+        Ok(())
     }
 
     pub fn last_block_slot(&self) -> Option<u64> {
@@ -321,6 +468,7 @@ impl Db {
 
         sync_table!(account_data);
         sync_table!(account_records);
+        sync_table!(account_index);
 
         sync_table!(tx_data);
         sync_table!(tx_records);
@@ -332,16 +480,17 @@ impl Db {
 }
 
 #[repr(C, packed)]
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct BlockRecord {
     pub slot: u64,
+    pub height: u64,
     pub ts: Option<NonZeroI64>,
     pub tx_start_idx: u64,
     pub tx_count: u64,
 }
 
 #[repr(C, packed)]
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct TxRecord {
     pub data_start_idx: u64,
     pub data_sz: u32,
@@ -417,15 +566,54 @@ impl Debug for TxInstruction {
     }
 }
 
-#[repr(C)]
-#[derive(Default, Debug)]
+#[repr(C, packed)]
+#[derive(Default)]
 pub struct AccountRecord {
+    pub id: AccountID,
     pub owner: AccountID,
     pub min_height: u64,
     pub max_height: u64,
-    pub start_idx: u64,
-    pub sz: u32,
+    pub data_start_idx: u64,
+    pub data_sz: u32,
     pub is_executable: bool,
+}
+
+impl Clone for AccountRecord {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            owner: self.owner.clone(),
+            min_height: self.min_height,
+            max_height: self.max_height,
+            data_start_idx: self.data_start_idx,
+            data_sz: self.data_sz,
+            is_executable: self.is_executable,
+        }
+    }
+}
+
+impl Debug for AccountRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let AccountRecord {
+            id,
+            owner,
+            min_height,
+            max_height,
+            data_start_idx,
+            data_sz,
+            is_executable,
+        } = self.clone();
+
+        f.debug_struct("AccountRecord")
+            .field("id", &id)
+            .field("owner", &owner)
+            .field("min_height", &min_height)
+            .field("max_height", &max_height)
+            .field("data_start_idx", &data_start_idx)
+            .field("data_sz", &data_sz)
+            .field("is_executable", &is_executable)
+            .finish()
+    }
 }
 
 const ACCOUNT_ID_LEN: usize = 32;

@@ -2928,6 +2928,7 @@ dependencies = [
  "eyre",
  "mmap-vec",
  "nonmax",
+ "rand 0.8.5",
  "serde",
  "solana-client",
  "solana-sdk",

@@ -14,6 +14,7 @@ ctrlc = "3.4.4"
 eyre = "0.6.12"
 mmap-vec = { path = "../mmap-vec" }
 nonmax = "0.5.5"
+rand = "0.8.5"
 serde = { version = "1.0.203", features = ["derive"] }
 solana-client = "2.0.1"
 solana-sdk = "2.0.1"
