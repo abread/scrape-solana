@@ -184,7 +184,7 @@ impl Db {
         }
 
         // prune possibly partially fetched account_data
-        if dbg!(expected_len) != dbg!(self.account_data.len()) {
+        if expected_len != self.account_data.len() {
             let r2 = writeln!(
                 out,
                 "dropping {} bytes from account data (possible partial fetch)",
