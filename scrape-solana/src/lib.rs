@@ -234,18 +234,29 @@ impl Db {
         const N_ELEMENTS_RANDOM: usize = 5;
         const N_ELEMENTS_ENDS: usize = 5;
 
-        let elements_to_check = (0..N_ELEMENTS_ENDS)
-            .map(|idx| idx)
+        let elements_to_check = self
+            .account_records
+            .iter()
+            .enumerate()
+            .take(N_ELEMENTS_ENDS)
             .chain(
-                (0..N_ELEMENTS_ENDS)
-                    .map(|offset| self.account_records.len().saturating_sub(offset + 1))
-                    .filter(|&idx| idx > N_ELEMENTS_ENDS),
+                self.account_records
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .take(N_ELEMENTS_ENDS),
             )
-            .chain((0..N_ELEMENTS_RANDOM).map(|_| rng.gen_range(0..self.account_records.len())));
+            .chain(
+                self.account_records
+                    .iter()
+                    .take(N_ELEMENTS_RANDOM)
+                    .map(|_| rng.gen_range(0..self.account_records.len()))
+                    .map(|idx| (idx, &self.account_records[idx])),
+            );
 
-        for idx in elements_to_check {
-            let id = self.account_records[idx].id.clone();
-            if self.account_index.get(&id).copied() != Some(idx as u64) {
+        for (idx, record) in elements_to_check {
+            let id = &record.id;
+            if self.account_index.get(id).copied() != Some(idx as u64) {
                 let _ = writeln!(
                     out,
                     "found account storage inconsistency for id={id:?},idx={idx}"
