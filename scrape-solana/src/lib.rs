@@ -18,6 +18,8 @@ use solana_transaction_status::{UiCompiledInstruction, UiConfirmedBlock, UiInstr
 mod mmap_map;
 use mmap_map::MmapMap;
 
+mod huge_vec;
+
 pub struct Db {
     block_records: MmapVec<BlockRecord>,
     tx_records: MmapVec<TxRecord>,

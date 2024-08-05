@@ -19,4 +19,7 @@ serde = { version = "1.0.203", features = ["derive"] }
 solana-client = "2.0.1"
 solana-sdk = "2.0.1"
 solana-transaction-status = "2.0.1"
+tempdir = "0.3.7"
+thiserror = "1.0.63"
 vector-trees = { path = "../vector-trees", features = ["mmap-vec"] }
+zstd = "0.13.2"
