@@ -11,13 +11,14 @@ readme = "README.md"
 
 [features]
 default = []
+std = []
 avltree = []
 bumpalo = ["dep:bumpalo"]
-mmap-vec = ["dep:mmap-vec"]
+serde = ["dep:serde"]
 
 [dependencies]
 bumpalo = { version = "3.4.0", features = ["collections"], optional = true }
-mmap-vec = { path = "../mmap-vec", optional = true }
+serde = { version = "1.0.203", features = ["derive"], optional = true }
 nonmax = "0.5.5"
 
 [dev-dependencies]

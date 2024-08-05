@@ -1,21 +1,97 @@
-use crate::Vector;
+use crate::vector::{Ref, RefMut};
+use crate::{Vector, VectorSlice, VectorSliceMut};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cmp::{Ord, Ordering};
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem;
+use core::ops::{Deref, DerefMut};
 use nonmax::NonMaxU64;
 
 pub const B: usize = 8;
 pub const MAX_CHILDREN: usize = B * 2;
 pub const MAX_KEYS: usize = MAX_CHILDREN - 1;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug)]
 pub struct BVecTreeNode<K, V> {
     keys: [Option<(K, V)>; MAX_KEYS],
+    #[cfg_attr(feature = "serde", serde(with = "children_serde"))]
     children: [Option<NonMaxU64>; MAX_CHILDREN],
     cur_keys: usize,
     leaf: bool,
+}
+
+mod children_serde {
+    use super::*;
+    use core::fmt;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(
+        children: &[Option<NonMaxU64>; MAX_CHILDREN],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(
+            children
+                .iter()
+                .map(|x| x.clone().map(|x| Into::<u64>::into(x))),
+        )
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<[Option<NonMaxU64>; MAX_CHILDREN], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor<'de>(PhantomData<&'de ()>);
+        impl<'de> serde::de::Visitor<'de> for Visitor<'de> {
+            type Value = [Option<NonMaxU64>; MAX_CHILDREN];
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_fmt(format_args!(
+                    "a sequence of {} Option<NonMaxU64>s",
+                    MAX_CHILDREN
+                ))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut children = [None; MAX_CHILDREN];
+
+                let mut i = 0;
+                while let Some(el) = seq.next_element()? {
+                    if i > MAX_CHILDREN {
+                        return Err(serde::de::Error::custom("too many children"));
+                    }
+
+                    children[i] =
+                        match el {
+                            None => None,
+                            Some(n) => Some(NonMaxU64::new(n).ok_or_else(|| {
+                                serde::de::Error::custom("invalid child: u64::MAX")
+                            })?),
+                        };
+
+                    i += 1;
+                }
+
+                if i != MAX_CHILDREN {
+                    return Err(serde::de::Error::custom("not enough children"));
+                }
+
+                Ok(children)
+            }
+        }
+
+        deserializer.deserialize_seq(Visitor(PhantomData))
+    }
 }
 
 impl<K, V> Default for BVecTreeNode<K, V> {
@@ -166,7 +242,11 @@ impl<K: Ord, V> BVecTreeNode<K, V> {
     }
 
     /// Appends all keys and children of other to the end of `self`, adding `mid` as key in the middle
-    pub fn merge(&mut self, mid: (K, V), other: &mut Self) {
+    pub fn merge<'s>(&mut self, mid: (K, V), mut other: impl RefMut<'s, Self>)
+    where
+        V: 's,
+        K: 's,
+    {
         debug_assert!(self.cur_keys + 1 + other.cur_keys <= MAX_KEYS);
 
         if self.cur_keys > 0 {
@@ -281,7 +361,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         }
     }
 
-    pub fn get(&self, key: &K) -> Option<&V> {
+    pub fn get(&self, key: &K) -> Option<impl Ref<'_, V>> {
         if let Some(idx) = self.0.root {
             let mut cur_node = idx;
 
@@ -291,7 +371,10 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                 let (idx, exact) = node.find_key_id(key);
 
                 if exact {
-                    return Some(&self.get_node(cur_node).keys[idx].as_ref().unwrap().1);
+                    return Some(
+                        self.get_node(cur_node)
+                            .map(move |r| &r.keys[idx].as_ref().unwrap().1),
+                    );
                 }
 
                 if node.leaf {
@@ -305,7 +388,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         None
     }
 
-    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+    pub fn get_mut(&mut self, key: &K) -> Option<impl RefMut<'_, V>> {
         if let Some(idx) = self.0.root {
             let mut cur_node = idx;
 
@@ -315,7 +398,11 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                 let (idx, exact) = node.find_key_id(key);
 
                 if exact {
-                    return Some(&mut self.get_node_mut(cur_node).keys[idx].as_mut().unwrap().1);
+                    core::mem::forget(node);
+                    return Some(
+                        self.get_node_mut(cur_node)
+                            .map_mut(move |r| &mut r.keys[idx].as_mut().unwrap().1),
+                    );
                 }
 
                 if node.leaf {
@@ -365,12 +452,16 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
 
     fn insert_internal(&mut self, value: (K, V)) -> Option<(K, V)> {
         if let Some(idx) = self.0.root {
-            let root_node = self.get_node_mut(idx);
+            let root_node_cur_keys = self.get_node_mut(idx).cur_keys;
 
-            if root_node.cur_keys == MAX_KEYS {
+            if root_node_cur_keys == MAX_KEYS {
                 let new_root = self.allocate_node();
-                let new_root_node = self.get_node_mut(new_root);
-                new_root_node.children[0] = Some(idx);
+
+                {
+                    let mut new_root_node_ref = self.get_node_mut(new_root);
+                    new_root_node_ref.children[0] = Some(idx);
+                }
+
                 self.0.root = Some(new_root);
                 self.split_child(new_root, 0);
             }
@@ -382,7 +473,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         let mut cur_node = self.0.root.unwrap();
 
         loop {
-            let node = self.get_node_mut(cur_node);
+            let mut node = self.get_node_mut(cur_node);
 
             if node.leaf {
                 break;
@@ -394,14 +485,16 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                 return node.insert_node_at(value, idx);
             } else {
                 let child = node.children[idx].unwrap();
+                core::mem::forget(node); // satisfy borrow checker
 
                 if self.get_node(child).cur_keys == MAX_KEYS {
                     self.split_child(cur_node, idx);
 
-                    match value
+                    let cmp = value
                         .0
-                        .cmp(&self.get_node(cur_node).keys[idx].as_ref().unwrap().0)
-                    {
+                        .cmp(&self.get_node(cur_node).keys[idx].as_ref().unwrap().0);
+
+                    match cmp {
                         Ordering::Greater => {
                             idx += 1;
                         }
@@ -439,21 +532,25 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
 
             if exact {
                 if node.leaf {
+                    core::mem::forget(node); // satisfy borrow checker
                     let ret = self.remove_key(node_idx, idx).0;
                     return ret;
                 } else {
                     let left_child = node.children[idx].unwrap();
                     let right_child = node.children[idx + 1].unwrap();
+                    core::mem::forget(node); // satisfy borrow checker
 
                     if self.get_node(left_child).cur_keys > B - 1 {
                         let mut lr_child = left_child;
                         while !self.get_node(lr_child).leaf {
-                            self.ensure_node_degree(lr_child, self.get_node(lr_child).cur_keys);
+                            let lr_child_cur_keys = self.get_node(lr_child).cur_keys;
+                            self.ensure_node_degree(lr_child, lr_child_cur_keys);
                             let lr_node = self.get_node(lr_child);
                             lr_child = lr_node.children[lr_node.cur_keys].unwrap();
                         }
-                        let (pred, _) =
-                            self.remove_key(lr_child, self.get_node(lr_child).cur_keys - 1);
+
+                        let key_to_remove = self.get_node(lr_child).deref().cur_keys - 1;
+                        let (pred, _) = self.remove_key(lr_child, key_to_remove);
                         return mem::replace(&mut self.get_node_mut(node_idx).keys[idx], pred);
                     } else if self.get_node(right_child).cur_keys > B - 1 {
                         let mut rl_child = right_child;
@@ -476,6 +573,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
             }
 
             if !node.leaf {
+                core::mem::forget(node); // satisfy borrow checker
                 let ret = self.ensure_node_degree(node_idx, idx);
                 if ret != node_idx {
                     if cur_node == self.0.root {
@@ -499,7 +597,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         node_id: NonMaxU64,
         key_id: usize,
     ) -> (Option<(K, V)>, Option<NonMaxU64>) {
-        let node = self.get_node_mut(node_id);
+        let mut node = self.get_node_mut(node_id);
         node.remove_key(key_id)
     }
 
@@ -507,15 +605,17 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
     ///
     /// Returns new parent
     fn merge_children(&mut self, parent: NonMaxU64, key_id: usize) -> NonMaxU64 {
-        let parent_node = self.get_node_mut(parent);
+        let mut parent_node = self.get_node_mut(parent);
         let left_child = parent_node.children[key_id].unwrap();
         let right_child = parent_node.children[key_id + 1].unwrap();
 
         let (mid, _) = parent_node.remove_key_rchild(key_id);
-        let (left_node, right_node) = self.get_two_nodes_mut(left_child, right_child);
+        core::mem::forget(parent_node); // satisfy borrow checker
+        let (mut left_node, right_node) = self.get_two_nodes_mut(left_child, right_child);
 
         left_node.merge(mid.unwrap(), right_node);
 
+        core::mem::forget(left_node);
         self.free_node(right_child);
 
         if self.get_node(parent).cur_keys == 0 {
@@ -533,16 +633,21 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         let child_node = self.get_node(child_node_id);
 
         if child_node.cur_keys < B {
+            core::mem::forget(child_node); // satisfy borrow checker
+
             if child_id != 0
                 && self
                     .get_node(parent_node.children[child_id - 1].unwrap())
                     .cur_keys
                     > B - 1
             {
-                let (key, (left, right)) = self.get_key_nodes_mut(parent, child_id - 1);
-                let left_key = key.take().unwrap();
+                core::mem::forget(parent_node); // satisfy borrow checker
+
+                let (mut key, (mut left, mut right)) = self.get_key_nodes_mut(parent, child_id - 1);
+                let left_key = Option::take(&mut key).unwrap();
                 right.insert_node(left_key);
-                let (nkey, rchild) = left.remove_key_rchild(left.cur_keys - 1);
+                let left_cur_keys = left.cur_keys;
+                let (nkey, rchild) = left.remove_key_rchild(left_cur_keys - 1);
                 right.children[0] = rchild;
                 *key = nkey;
             } else if child_id != parent_node.cur_keys
@@ -551,15 +656,23 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                     .cur_keys
                     > B - 1
             {
-                let (key, (left, right)) = self.get_key_nodes_mut(parent, child_id);
-                let right_key = key.take().unwrap();
+                core::mem::forget(parent_node); // satisfy borrow checker
+
+                let (mut key, (mut left, mut right)) = self.get_key_nodes_mut(parent, child_id);
+                let right_key = Option::take(&mut key).unwrap();
                 left.insert_node_rchild(right_key);
                 let (nkey, lchild) = right.remove_key(0);
-                left.children[left.cur_keys] = lchild;
+
+                let left_cur_keys = left.cur_keys;
+                left.children[left_cur_keys] = lchild;
                 *key = nkey;
             } else if child_id > 0 {
+                core::mem::forget(parent_node); // satisfy borrow checker
+
                 return self.merge_children(parent, child_id - 1);
             } else {
+                core::mem::forget(parent_node); // satisfy borrow checker
+
                 return self.merge_children(parent, child_id);
             }
         }
@@ -571,7 +684,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         let node_to_split = self.get_node(parent).children[child_id].unwrap();
         let new_node = self.allocate_node();
 
-        let (left, right) = self.get_two_nodes_mut(node_to_split, new_node);
+        let (mut left, mut right) = self.get_two_nodes_mut(node_to_split, new_node);
 
         //Copy the second half of node_to_split over to new_node
         for i in 0..(B - 1) {
@@ -591,6 +704,8 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
             }
         }
 
+        core::mem::forget(left);
+        core::mem::forget(right);
         self.insert_node(parent, mid);
 
         debug_assert!(self.get_node(parent).children[child_id].is_none());
@@ -604,11 +719,11 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         self.get_node_mut(node_id).insert_node(value)
     }
 
-    fn get_node_mut(&mut self, id: NonMaxU64) -> &mut BVecTreeNode<K, V> {
+    fn get_node_mut(&mut self, id: NonMaxU64) -> impl RefMut<'_, BVecTreeNode<K, V>> {
         self.0
             .tree_buf
             .slice_mut()
-            .get_mut(Into::<u64>::into(id) as usize)
+            .map_get_mut(Into::<u64>::into(id) as usize)
             .unwrap()
     }
 
@@ -617,7 +732,10 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         &mut self,
         left: NonMaxU64,
         right: NonMaxU64,
-    ) -> (&mut BVecTreeNode<K, V>, &mut BVecTreeNode<K, V>) {
+    ) -> (
+        impl RefMut<'_, BVecTreeNode<K, V>>,
+        impl RefMut<'_, BVecTreeNode<K, V>>,
+    ) {
         debug_assert!(left != right);
 
         if left < right {
@@ -650,32 +768,83 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         parent: NonMaxU64,
         key: usize,
     ) -> (
-        &mut Option<(K, V)>,
-        (&mut BVecTreeNode<K, V>, &mut BVecTreeNode<K, V>),
+        impl RefMut<'_, Option<(K, V)>>,
+        (
+            impl RefMut<'_, BVecTreeNode<K, V>>,
+            impl RefMut<'_, BVecTreeNode<K, V>>,
+        ),
     ) {
-        let parent_node = self.get_node_mut(parent);
-        let left = parent_node.children[key].unwrap();
-        let right = parent_node.children[key + 1].unwrap();
+        let parent: u64 = parent.into();
+
+        let mut slices = BTreeMap::new();
+        let (l, r) = self.0.tree_buf.slice_mut().split_at_mut(parent as usize);
+        let (parent_node, r) = r.split_first_mut().unwrap();
+        if l.len() != 0 {
+            slices.insert(0, l);
+        }
+        if r.len() != 0 {
+            slices.insert(parent + 1, r);
+        }
+
+        let left: u64 = parent_node.children[key].unwrap().into();
+        let right: u64 = parent_node.children[key + 1].unwrap().into();
         debug_assert!(left != parent);
         debug_assert!(right != parent);
-        // This is safe, because parent can not be equal to either of the child nodes
-        let key_mut = unsafe { &mut *(&mut parent_node.keys[key] as *mut _) };
-        (key_mut, self.get_two_nodes_mut(left, right))
+
+        let key_mut = parent_node.map_mut(move |r| &mut r.keys[key]);
+
+        if !slices.contains_key(&left) {
+            slices = slices
+                .into_iter()
+                .flat_map(|(start_id, slice)| {
+                    if start_id < left && start_id + slice.len() as u64 > left {
+                        let (l, r) = slice.split_at_mut((left - start_id) as usize);
+                        [Some((start_id, l)), Some((left, r))]
+                    } else {
+                        [Some((start_id, slice)), None]
+                    }
+                })
+                .filter_map(|x| x)
+                .collect();
+        }
+        let (left_node, rest) = slices.remove(&left).unwrap().split_first_mut().unwrap();
+        if rest.len() != 0 {
+            slices.insert(left + 1, rest);
+        }
+
+        if !slices.contains_key(&right) {
+            slices = slices
+                .into_iter()
+                .flat_map(|(start_id, slice)| {
+                    if start_id < right && start_id + slice.len() as u64 > right {
+                        let (l, r) = slice.split_at_mut((right - start_id) as usize);
+                        [Some((start_id, l)), Some((right, r))]
+                    } else {
+                        [Some((start_id, slice)), None]
+                    }
+                })
+                .filter_map(|x| x)
+                .collect();
+        }
+        let (right_node, _rest) = slices.remove(&right).unwrap().split_first_mut().unwrap();
+
+        (key_mut, (left_node, right_node))
     }
 
-    fn get_node(&self, id: NonMaxU64) -> &BVecTreeNode<K, V> {
+    fn get_node(&self, id: NonMaxU64) -> impl Ref<'_, BVecTreeNode<K, V>> {
         self.0
             .tree_buf
             .slice()
-            .get(Into::<u64>::into(id) as usize)
+            .map_get(Into::<u64>::into(id) as usize)
             .unwrap()
     }
 
     fn allocate_node(&mut self) -> NonMaxU64 {
         if let Some(idx) = self.0.free_head {
-            let free_node = self.get_node_mut(idx);
+            let mut free_node = self.get_node_mut(idx);
             let child_zero = free_node.children[0];
             *free_node = BVecTreeNode::default();
+            core::mem::forget(free_node); // satisfy borrow checker
             self.0.free_head = child_zero;
             idx
         } else {
@@ -687,13 +856,14 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
 
     fn free_node(&mut self, node_id: NonMaxU64) {
         let head = self.0.free_head;
-        let node = self.get_node_mut(node_id);
+        let mut node = self.get_node_mut(node_id);
 
         //Make sure all the keys and children are taken out before freeing
         debug_assert!(node.keys.iter().filter_map(|x| x.as_ref()).count() == 0);
         debug_assert!(node.children.iter().filter_map(|x| x.as_ref()).count() == 0);
 
         node.children[0] = head;
+        core::mem::forget(node); // satisfy borrow checker
         self.0.free_head = Some(node_id);
     }
 }

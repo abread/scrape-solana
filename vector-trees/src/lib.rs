@@ -1,4 +1,4 @@
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(all(not(test), not(feature = "std")), no_std)]
 extern crate alloc;
 
 #[cfg(feature = "avltree")]
@@ -9,4 +9,4 @@ pub mod vector;
 #[cfg(feature = "avltree")]
 pub use avltree::VecAVLTree;
 pub use btree::BVecTreeMap;
-pub use vector::Vector;
+pub use vector::{Ref, RefMut, Vector, VectorSlice, VectorSliceMut};

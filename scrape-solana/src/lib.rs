@@ -15,8 +15,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use solana_transaction_status::{UiCompiledInstruction, UiConfirmedBlock, UiInstruction};
 
-mod mmap_map;
-use mmap_map::MmapMap;
+mod huge_map;
 
 mod huge_vec;
 
