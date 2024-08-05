@@ -1,5 +1,5 @@
 use eyre::{eyre, Context};
-use mmap_vec::MmapVec;
+use huge_map::MapFsStore;
 use nonmax::NonMaxU64;
 use rand::Rng;
 use std::{
@@ -18,14 +18,31 @@ use solana_transaction_status::{UiCompiledInstruction, UiConfirmedBlock, UiInstr
 mod huge_map;
 
 mod huge_vec;
+use huge_vec::{FsStore, ZstdTransformer};
+
+type HugeVec<T, const CHUNK_SZ: usize> =
+    huge_vec::HugeVec<T, FsStore<huge_vec::Chunk<T, CHUNK_SZ>, ZstdTransformer>, CHUNK_SZ>;
+type HugeMap<K, V, const CHUNK_SZ: usize> =
+    huge_map::HugeMap<K, V, MapFsStore<ZstdTransformer>, CHUNK_SZ>;
+
+const fn chunk_sz<T>(target_mem_usage_bytes: usize) -> usize {
+    let target_chunk_sz_bytes = target_mem_usage_bytes / huge_vec::CHUNK_CACHE_RECLAMATION_INTERVAL;
+
+    target_chunk_sz_bytes / std::mem::size_of::<T>()
+}
+const MB: usize = 1024 * 1024;
 
 pub struct Db {
-    block_records: MmapVec<BlockRecord>,
-    tx_records: MmapVec<TxRecord>,
-    tx_data: MmapVec<u8>,
-    account_records: MmapVec<AccountRecord>,
-    account_data: MmapVec<u8>,
-    account_index: MmapMap<AccountID, u64>,
+    block_records: HugeVec<BlockRecord, { chunk_sz::<BlockRecord>(32 * MB) }>,
+    tx_records: HugeVec<TxRecord, { chunk_sz::<TxRecord>(128 * MB) }>,
+    tx_data: HugeVec<u8, { chunk_sz::<u8>(256 * MB) }>,
+    account_records: HugeVec<AccountRecord, { chunk_sz::<AccountRecord>(32 * MB) }>,
+    account_data: HugeVec<u8, { chunk_sz::<u8>(256 * MB) }>,
+    account_index: HugeMap<
+        AccountID,
+        u64,
+        { chunk_sz::<vector_trees::btree::BVecTreeNode<AccountID, u64>>(256 * MB) },
+    >,
 }
 
 impl Db {
@@ -34,7 +51,12 @@ impl Db {
 
         macro_rules! open_vec_table {
             ($name:ident) => {
-                let $name = unsafe { MmapVec::with_name(root_path.join(stringify!($name))) }
+                let store = FsStore::open(
+                    root_path.join(stringify!($name)),
+                    ZstdTransformer::default(),
+                )
+                .wrap_err(concat!("Failed to open table store: ", stringify!($name)))?;
+                let $name = HugeVec::new(store)
                     .wrap_err(concat!("Failed to open table: ", stringify!($name)))?;
             };
         }
@@ -46,8 +68,8 @@ impl Db {
         open_vec_table!(account_records);
 
         // build account records map from underlying vec
-        let account_index = unsafe { MmapMap::with_name(root_path.join("account_index")) }
-            .wrap_err("Failed to open table: account_index")?;
+        let store = MapFsStore::new(root_path.join("account_index"), ZstdTransformer::default());
+        let account_index = HugeMap::open(store).wrap_err("Failed to open table: account_index")?;
 
         let mut db = Db {
             block_records,
@@ -466,50 +488,25 @@ impl Db {
 
         Ok(())
     }
-
-    pub fn force_sync(&mut self) -> eyre::Result<()> {
-        macro_rules! sync_table {
-            ($name:ident) => {
-                self.$name
-                    .force_sync()
-                    .wrap_err(concat!("could not sync table: ", stringify!($name)))?;
-            };
-        }
-
-        sync_table!(account_data);
-        sync_table!(account_records);
-        sync_table!(account_index);
-
-        sync_table!(tx_data);
-        sync_table!(tx_records);
-
-        sync_table!(block_records);
-
-        Ok(())
-    }
 }
 
-#[repr(C, packed)]
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct BlockRecord {
     pub slot: u64,
     pub height: u64,
     pub ts: Option<NonZeroI64>,
     pub tx_start_idx: u64,
-    pub tx_count: u64,
 }
 
-#[repr(C, packed)]
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct TxRecord {
     pub data_start_idx: u64,
-    pub data_sz: u32,
     pub version: TxVersion,
     pub fee: Option<NonMaxU64>,
     pub compute_units: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct TxVersion(u32);
 impl From<solana_sdk::transaction::TransactionVersion> for TxVersion {
@@ -576,54 +573,14 @@ impl Debug for TxInstruction {
     }
 }
 
-#[repr(C, packed)]
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct AccountRecord {
     pub id: AccountID,
     pub owner: AccountID,
     pub min_height: u64,
     pub max_height: u64,
     pub data_start_idx: u64,
-    pub data_sz: u32,
     pub is_executable: bool,
-}
-
-impl Clone for AccountRecord {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            owner: self.owner.clone(),
-            min_height: self.min_height,
-            max_height: self.max_height,
-            data_start_idx: self.data_start_idx,
-            data_sz: self.data_sz,
-            is_executable: self.is_executable,
-        }
-    }
-}
-
-impl Debug for AccountRecord {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let AccountRecord {
-            id,
-            owner,
-            min_height,
-            max_height,
-            data_start_idx,
-            data_sz,
-            is_executable,
-        } = self.clone();
-
-        f.debug_struct("AccountRecord")
-            .field("id", &id)
-            .field("owner", &owner)
-            .field("min_height", &min_height)
-            .field("max_height", &max_height)
-            .field("data_start_idx", &data_start_idx)
-            .field("data_sz", &data_sz)
-            .field("is_executable", &is_executable)
-            .finish()
-    }
 }
 
 const ACCOUNT_ID_LEN: usize = 32;
