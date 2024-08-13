@@ -23,19 +23,19 @@ pub enum DbOperation {
     Sync,
 }
 
-pub fn spawn_db_worker(
+pub fn spawn_db_actor(
     root_path: PathBuf,
     default_middle_slot_getter: impl FnOnce() -> u64 + Send + 'static,
 ) -> (SyncSender<DbOperation>, JoinHandle<eyre::Result<()>>) {
     let (tx, rx) = sync_channel(256);
     let handle = std::thread::spawn(move || {
         let db = Db::open(root_path, default_middle_slot_getter, std::io::stdout())?;
-        worker(db, rx)
+        actor(db, rx)
     });
     (tx, handle)
 }
 
-fn worker(mut db: Db, rx: Receiver<DbOperation>) -> eyre::Result<()> {
+fn actor(mut db: Db, rx: Receiver<DbOperation>) -> eyre::Result<()> {
     use DbOperation::*;
 
     for op in rx {

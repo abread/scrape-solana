@@ -1,9 +1,9 @@
+pub mod actors;
 mod crc_checksum_serde;
 mod db;
 mod huge_vec;
 mod model;
 pub mod solana_api;
-pub mod workers;
 
 use rand::Rng;
 use vector_trees::Vector;

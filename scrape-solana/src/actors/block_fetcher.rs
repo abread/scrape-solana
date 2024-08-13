@@ -28,12 +28,12 @@ pub fn spawn_block_fetcher(
 ) {
     let (tx, rx) = sync_channel(1);
     let handle = std::thread::spawn(move || {
-        block_fetcher_worker(forward_chance, step, rx, api, block_handler_tx, db_tx)
+        block_fetcher_actor(forward_chance, step, rx, api, block_handler_tx, db_tx)
     });
     (tx, handle)
 }
 
-fn block_fetcher_worker(
+fn block_fetcher_actor(
     forward_chance: f64,
     step: u64,
     rx: Receiver<BlockFetcherOperation>,

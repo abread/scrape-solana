@@ -1,5 +1,5 @@
 use eyre::{eyre, Result, WrapErr};
-use scrape_solana::{solana_api::SolanaApi, workers};
+use scrape_solana::{actors, solana_api::SolanaApi};
 use std::{fmt::Debug, path::PathBuf, str::FromStr, sync::Arc};
 
 use clap::Parser;
@@ -73,11 +73,10 @@ fn main() -> Result<()> {
     };
 
     let api = Arc::new(SolanaApi::new(endpoint_url.to_owned()));
-    let (db_tx, db_handle) =
-        workers::spawn_db_worker(args.db_root_path, default_middle_slot_getter);
+    let (db_tx, db_handle) = actors::spawn_db_actor(args.db_root_path, default_middle_slot_getter);
     let (block_handler_tx, block_handler_handle) =
-        workers::spawn_block_handler(Arc::clone(&api), db_tx.clone());
-    let (block_fetcher_tx, block_fetcher_handle) = workers::spawn_block_fetcher(
+        actors::spawn_block_handler(Arc::clone(&api), db_tx.clone());
+    let (block_fetcher_tx, block_fetcher_handle) = actors::spawn_block_fetcher(
         args.forward_fetch_chance,
         args.shard_config.n,
         api,
@@ -88,7 +87,7 @@ fn main() -> Result<()> {
     ctrlc::set_handler(move || {
         println!("received stop signal");
         block_fetcher_tx
-            .send(workers::BlockFetcherOperation::Stop)
+            .send(actors::BlockFetcherOperation::Stop)
             .expect("could not send stop signal to block fetcher");
     })
     .wrap_err("could not set Ctrl+C handler")?;
@@ -96,7 +95,7 @@ fn main() -> Result<()> {
     block_handler_handle
         .join()
         .expect("block handler panicked")?;
-    db_handle.join().expect("db worker panicked")?;
+    db_handle.join().expect("db actor panicked")?;
     block_fetcher_handle
         .join()
         .expect("block fetcher panicked")?;

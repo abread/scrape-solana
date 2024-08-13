@@ -21,11 +21,11 @@ pub fn spawn_block_handler(
     db_tx: SyncSender<DbOperation>,
 ) -> (SyncSender<Block>, std::thread::JoinHandle<eyre::Result<()>>) {
     let (tx, rx) = std::sync::mpsc::sync_channel(128);
-    let handle = std::thread::spawn(move || block_handler_worker(rx, api, db_tx));
+    let handle = std::thread::spawn(move || block_handler_actor(rx, api, db_tx));
     (tx, handle)
 }
 
-fn block_handler_worker(
+fn block_handler_actor(
     rx: Receiver<Block>,
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
@@ -33,7 +33,7 @@ fn block_handler_worker(
     let (new_acc_tx, new_acc_rx) = std::sync::mpsc::sync_channel(256);
     let filtered_handler_handle = {
         let db_tx = db_tx.clone();
-        std::thread::spawn(move || filtered_account_ids_handler_worker(new_acc_rx, api, db_tx))
+        std::thread::spawn(move || filtered_account_ids_handler_actor(new_acc_rx, api, db_tx))
     };
 
     let mut last_sync = Instant::now();
@@ -75,7 +75,7 @@ fn block_handler_worker(
     Ok(())
 }
 
-fn filtered_account_ids_handler_worker(
+fn filtered_account_ids_handler_actor(
     rx: Receiver<BTreeSet<AccountID>>,
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
