@@ -809,6 +809,7 @@ mod chunk_cache {
 
 #[cfg(test)]
 mod test {
+    use std::io;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
 
@@ -930,21 +931,31 @@ mod test {
             writebacks: AtomicU64,
         }
         impl IOTransformer for &Recorder {
-            type Error = std::convert::Infallible;
+            type Error = io::Error;
+            type Reader<R> = R where R: io::BufRead;
+            type Writer<W> = W where W: io::Write;
 
-            fn wrap_reader(
+            fn wrap_read<R: io::BufRead, T, E>(
                 &self,
-                reader: impl std::io::BufRead,
-            ) -> Result<impl std::io::Read, Self::Error> {
-                Ok(reader)
+                mut orig_reader: R,
+                read_fn: impl FnOnce(&mut Self::Reader<R>) -> Result<T, E>,
+            ) -> Result<T, E>
+            where
+                E: From<Self::Error>,
+            {
+                read_fn(&mut orig_reader)
             }
 
-            fn wrap_writer(
+            fn wrap_write<W: io::Write, T, E>(
                 &self,
-                writer: impl std::io::Write,
-            ) -> Result<impl std::io::Write, Self::Error> {
+                mut orig_writer: W,
+                write_fn: impl FnOnce(&mut Self::Writer<W>) -> Result<T, E>,
+            ) -> Result<T, E>
+            where
+                E: From<Self::Error>,
+            {
                 self.writebacks.fetch_add(1, Ordering::Release);
-                Ok(writer)
+                write_fn(&mut orig_writer)
             }
         }
 

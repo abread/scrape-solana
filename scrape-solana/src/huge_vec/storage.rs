@@ -42,14 +42,8 @@ pub enum FsStoreError<IOTErr> {
     #[error("Could not seek within metadata")]
     MetadataSeek(#[source] io::Error),
 
-    #[error("Could not create metadata reader")]
-    MetadataReadPrep(#[source] IOTErr),
-
     #[error("Could not read/parse metadata")]
     MetadataRead(#[source] Box<bincode::ErrorKind>),
-
-    #[error("Could not create metadata writer")]
-    MetadataWritePrep(#[source] IOTErr),
 
     #[error("Could not write metadata")]
     MetadataWrite(#[source] Box<bincode::ErrorKind>),
@@ -60,14 +54,8 @@ pub enum FsStoreError<IOTErr> {
     #[error("Could not delete stored object file")]
     DataRemove(#[source] io::Error),
 
-    #[error("Could not create object loader")]
-    DataLoadPrep(#[source] IOTErr),
-
     #[error("Could not load stored object")]
     DataLoad(#[source] Box<bincode::ErrorKind>),
-
-    #[error("Could not create object storer")]
-    DataStorePrep(#[source] IOTErr),
 
     #[error("Could not store object")]
     DataStore(#[source] Box<bincode::ErrorKind>),
@@ -77,6 +65,9 @@ pub enum FsStoreError<IOTErr> {
 
     #[error("Cannot load index {idx}: out of bounds (len={len})")]
     OutOfBoundsLoad { len: usize, idx: usize },
+
+    #[error("I/O error (from I/O transformer)")]
+    IOError(#[from] IOTErr),
 }
 
 impl<T, IOT> FsStore<T, IOT>
@@ -108,10 +99,9 @@ where
             BasicStorageMeta::default()
         } else {
             let reader = BufReader::new(&metadata_file);
-            let reader = io_transformer
-                .wrap_reader(reader)
-                .map_err(FsStoreError::MetadataReadPrep)?;
-            bincode::deserialize_from(reader).map_err(FsStoreError::MetadataRead)?
+            io_transformer.wrap_read(reader, |r| {
+                bincode::deserialize_from(r).map_err(FsStoreError::MetadataRead)
+            })?
         };
 
         Ok(Self {
@@ -124,22 +114,14 @@ where
     }
 
     fn write_metadata(&mut self) -> Result<(), FsStoreError<IOT::Error>> {
-        use io::Write;
-
         self.metadata_file
             .seek(io::SeekFrom::Start(0))
             .map_err(FsStoreError::MetadataSeek)?;
 
         let writer = BufWriter::new(&mut self.metadata_file);
-        let mut writer = self
-            .io_transformer
-            .wrap_writer(writer)
-            .map_err(FsStoreError::MetadataWritePrep)?;
-        bincode::serialize_into(&mut writer, &self.metadata)
-            .map_err(FsStoreError::MetadataWrite)?;
-        writer
-            .flush()
-            .map_err(|e| FsStoreError::MetadataWrite(Box::new(bincode::ErrorKind::Io(e))))?;
+        self.io_transformer.wrap_write(writer, |w| {
+            bincode::serialize_into(w, &self.metadata).map_err(FsStoreError::MetadataWrite)
+        })?;
 
         Ok(())
     }
@@ -174,16 +156,12 @@ where
             .map_err(FsStoreError::DataOpen)?;
         let reader = BufReader::new(file);
 
-        bincode::deserialize_from(
-            self.io_transformer
-                .wrap_reader(reader)
-                .map_err(FsStoreError::DataLoadPrep)?,
-        )
-        .map_err(FsStoreError::DataLoad)
+        self.io_transformer.wrap_read(reader, |r| {
+            bincode::deserialize_from(r).map_err(FsStoreError::DataLoad)
+        })
     }
 
     fn store(&mut self, idx: usize, object: impl Borrow<T>) -> Result<(), Self::Error> {
-        use io::Write;
         match idx.cmp(&self.metadata.len) {
             std::cmp::Ordering::Equal => {
                 self.metadata.len += 1;
@@ -208,14 +186,9 @@ where
             .open(path)
             .map_err(FsStoreError::DataOpen)?;
 
-        let mut writer = self
-            .io_transformer
-            .wrap_writer(file)
-            .map_err(FsStoreError::DataStorePrep)?;
-        bincode::serialize_into(&mut writer, object.borrow()).map_err(FsStoreError::DataStore)?;
-        writer
-            .flush()
-            .map_err(|e| FsStoreError::DataStore(Box::new(bincode::ErrorKind::Io(e))))?;
+        self.io_transformer.wrap_write(file, |w| {
+            bincode::serialize_into(w, object.borrow()).map_err(FsStoreError::DataStore)
+        })?;
 
         Ok(())
     }

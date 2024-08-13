@@ -1,21 +1,61 @@
-use std::io;
+use std::io::{self, Write};
 
 pub trait IOTransformer {
     type Error: std::error::Error + Send + Sync + 'static;
+    type Reader<R>: io::Read
+    where
+        R: io::BufRead;
+    type Writer<W>: io::Write
+    where
+        W: io::Write;
 
-    fn wrap_reader(&self, reader: impl io::BufRead) -> Result<impl io::Read, Self::Error>;
-    fn wrap_writer(&self, writer: impl io::Write) -> Result<impl io::Write, Self::Error>;
+    /// Read from a wrapped reader using the provided function.
+    fn wrap_read<R: io::BufRead, T, E>(
+        &self,
+        orig_reader: R,
+        read_fn: impl FnOnce(&mut Self::Reader<R>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<Self::Error>;
+
+    /// Write to a wrapped writer using the provided function.
+    /// The writer is flushed after the write_fn finishes successfully.
+    fn wrap_write<W: io::Write, T, E>(
+        &self,
+        orig_writer: W,
+        write_fn: impl FnOnce(&mut Self::Writer<W>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<Self::Error>;
 }
 
 impl IOTransformer for () {
-    type Error = std::convert::Infallible;
+    type Error = io::Error;
+    type Reader<R> = R where R: io::BufRead;
+    type Writer<W> = W where W: io::Write;
 
-    fn wrap_reader(&self, reader: impl io::BufRead) -> Result<impl io::Read, Self::Error> {
-        Ok(reader)
+    fn wrap_read<R: io::BufRead, T, E>(
+        &self,
+        mut orig_reader: R,
+        read_fn: impl FnOnce(&mut Self::Reader<R>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<Self::Error>,
+    {
+        read_fn(&mut orig_reader)
     }
 
-    fn wrap_writer(&self, writer: impl io::Write) -> Result<impl io::Write, Self::Error> {
-        Ok(writer)
+    fn wrap_write<W: io::Write, T, E>(
+        &self,
+        mut orig_writer: W,
+        write_fn: impl FnOnce(&mut Self::Writer<W>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<Self::Error>,
+    {
+        let res = write_fn(&mut orig_writer)?;
+        orig_writer.flush()?;
+        Ok(res)
     }
 }
 
@@ -51,8 +91,17 @@ impl Default for ZstdTransformer {
 
 impl IOTransformer for ZstdTransformer {
     type Error = io::Error;
+    type Reader<R> = zstd::stream::zio::Reader<R, zstd::stream::raw::Decoder<'static>> where R: io::BufRead;
+    type Writer<W> = zstd::stream::zio::Writer<W, zstd::stream::raw::Encoder<'static>> where W: io::Write;
 
-    fn wrap_reader(&self, reader: impl io::BufRead) -> Result<impl io::Read, Self::Error> {
+    fn wrap_read<R: io::BufRead, T, E>(
+        &self,
+        orig_reader: R,
+        read_fn: impl FnOnce(&mut Self::Reader<R>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<Self::Error>,
+    {
         use zstd::stream::raw::Decoder;
         use zstd::stream::zio::Reader;
 
@@ -62,10 +111,19 @@ impl IOTransformer for ZstdTransformer {
             Decoder::new()
         }?;
 
-        Ok(Reader::new(reader, decoder))
+        let mut reader = Reader::new(orig_reader, decoder);
+
+        read_fn(&mut reader)
     }
 
-    fn wrap_writer(&self, writer: impl io::Write) -> Result<impl io::Write, Self::Error> {
+    fn wrap_write<W: io::Write, T, E>(
+        &self,
+        orig_writer: W,
+        write_fn: impl FnOnce(&mut Self::Writer<W>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<Self::Error>,
+    {
         use zstd::stream::raw::Encoder;
         use zstd::stream::zio::Writer;
 
@@ -75,7 +133,13 @@ impl IOTransformer for ZstdTransformer {
             Encoder::new(self.level)
         }?;
 
-        Ok(Writer::new(writer, encoder))
+        let mut writer = Writer::new(orig_writer, encoder);
+
+        let result = write_fn(&mut writer)?;
+        writer.finish()?;
+        writer.flush()?;
+
+        Ok(result)
     }
 }
 
@@ -83,8 +147,7 @@ impl IOTransformer for ZstdTransformer {
 mod test {
     use super::IOTransformer;
     use super::ZstdTransformer;
-    use std::io::Read;
-    use std::io::{self, Write};
+    use std::io::{self, Read, Write};
 
     #[test]
     fn encode_decode_equal_unit() {
@@ -96,23 +159,30 @@ mod test {
         encode_decode_equal(ZstdTransformer::default())
     }
 
-    fn encode_decode_equal(io_transformer: impl IOTransformer) {
+    fn encode_decode_equal(io_transformer: impl IOTransformer<Error = io::Error>) {
         let data = vec![42u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 42];
         let mut pipe = io::Cursor::new(Vec::<u8>::with_capacity(data.len()));
 
         {
-            let mut writer = io_transformer.wrap_writer(&mut pipe).unwrap();
-            writer.write_all(&data).unwrap();
-            writer.flush().unwrap();
+            io_transformer
+                .wrap_write(&mut pipe, |w| {
+                    w.write_all(dbg!(&data))?;
+                    w.flush()?;
+                    Ok::<_, io::Error>(())
+                })
+                .unwrap();
         }
 
         pipe.set_position(0);
 
         let read_back = {
-            let mut reader = io_transformer.wrap_reader(&mut pipe).unwrap();
-            let mut res = Vec::new();
-            reader.read_to_end(&mut res).unwrap();
-            res
+            io_transformer
+                .wrap_read(&mut pipe, |r| {
+                    let mut res = Vec::new();
+                    r.read_to_end(&mut res)?;
+                    Ok::<_, io::Error>(res)
+                })
+                .unwrap()
         };
 
         assert_eq!(data, read_back);
