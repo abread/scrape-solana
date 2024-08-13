@@ -127,10 +127,13 @@ where
     }
 
     fn index_path(&self, idx: usize) -> PathBuf {
-        let idx_suffix = idx.bitand(0xff);
-        self.root
-            .as_path()
-            .join(format!("data.{idx_suffix:02x}/{idx:02x}"))
+        let idx = idx as u64;
+        let idx_prefix1 = idx.bitand(0xffff_0000_0000_0000) >> (16 * 3);
+        let idx_prefix2 = idx.bitand(0x0000_ffff_0000_0000) >> (16 * 2);
+        let idx_prefix3 = idx.bitand(0x0000_0000_ffff_0000) >> 16;
+        self.root.as_path().join(format!(
+            "data.{idx_prefix1:04x}/{idx_prefix2:04x}/{idx_prefix3:04x}/{idx:016x}"
+        ))
     }
 }
 
