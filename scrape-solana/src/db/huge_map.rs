@@ -14,8 +14,8 @@ use vector_trees::BVecTreeMap;
 
 use crate::huge_vec::{self, Chunk, FsStore, FsStoreError, HugeVec, IOTransformer, IndexedStorage};
 
-type HugeMapInner<K, V, MStore: MapStore<K, V, SZ>, const SZ: usize> =
-    BVecTreeMap<HugeVec<BVecTreeNode<K, V>, MStore::VecStore, SZ>, K, V>;
+type HugeMapInner<K, V, MStore, const SZ: usize> =
+    BVecTreeMap<HugeVec<BVecTreeNode<K, V>, <MStore as MapStore<K, V, SZ>>::VecStore, SZ>, K, V>;
 pub struct HugeMap<K: Debug, V: Debug, MStore: MapStore<K, V, SZ>, const SZ: usize = 4096> {
     map: HugeMapInner<K, V, MStore, SZ>,
     meta_store: MStore::MapMetaStore,
@@ -37,11 +37,11 @@ where
         let map_vec = HugeVec::new(vec_store).wrap_err("failed to open data store")?;
 
         let map = unsafe {
-            BVecTreeMap::from_raw(BVecTreeMapData {
+            BVecTreeMap::from_inner(BVecTreeMapData {
                 root: meta.root,
                 free_head: meta.free_head,
                 tree_buf: map_vec,
-                len: meta.len as usize,
+                len: meta.len,
                 _phantom: std::marker::PhantomData,
             })
         };
@@ -114,9 +114,9 @@ where
     fn write_metadata(&mut self) -> eyre::Result<()> {
         let meta = self.map.inner();
         self.meta_store.store_metadata(StoredMapMeta {
-            root: meta.root.map(|r| r.into()),
-            free_head: meta.free_head.map(|fh| fh.into()),
-            len: meta.len as u64,
+            root: meta.root,
+            free_head: meta.free_head,
+            len: meta.len,
         })?;
         Ok(())
     }
@@ -170,13 +170,14 @@ pub trait MapMetaStore {
     fn store_metadata(&mut self, meta: StoredMapMeta) -> Result<(), Self::Error>;
 }
 
-struct MapMetaFsStore(RefCell<File>);
+pub struct MapMetaFsStore(RefCell<File>);
 impl MapMetaFsStore {
     fn open(path: impl AsRef<Path>) -> Result<Self, bincode::Error> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(path)
             .map_err(|e| Box::new(bincode::ErrorKind::Io(e)))?;
         Ok(Self(RefCell::new(file)))
@@ -218,19 +219,9 @@ impl MapMetaStore for MapMetaFsStore {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct StoredMapMeta {
+#[derive(Serialize, Deserialize, Default)]
+pub struct StoredMapMeta {
     root: Option<NonMaxU64>,
     free_head: Option<NonMaxU64>,
     len: u64,
-}
-
-impl Default for StoredMapMeta {
-    fn default() -> Self {
-        StoredMapMeta {
-            root: None,
-            free_head: None,
-            len: 0,
-        }
-    }
 }

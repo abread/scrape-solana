@@ -43,6 +43,10 @@ impl<T, const SZ: usize> Chunk<T, SZ> {
         }
     }
 
+    pub fn truncate(&mut self, new_len: usize) {
+        self.storage.truncate(new_len);
+    }
+
     pub fn len(&self) -> usize {
         self.storage.len()
     }

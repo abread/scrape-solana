@@ -26,42 +26,44 @@ pub trait Vector<T> {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    fn get<'r>(&'r self, idx: usize) -> Option<impl Ref<'r, T>>
-    where
-        T: 'r,
-    {
+
+    fn get(&self, idx: usize) -> Option<<Self::Slice<'_> as VectorSlice<'_, T>>::Ref<'_>> {
         self.slice().map_get(idx)
     }
-    fn get_mut<'r>(&'r mut self, idx: usize) -> Option<impl RefMut<'r, T>>
-    where
-        T: 'r,
-    {
+    fn get_mut(
+        &mut self,
+        idx: usize,
+    ) -> Option<<Self::SliceMut<'_> as VectorSliceMut<'_, T>>::RefMut<'_>> {
         self.slice_mut().map_get_mut(idx)
     }
 }
 
 pub trait VectorSlice<'s, T: 's> {
+    type Ref<'r>: Ref<'r, T>
+    where
+        's: 'r;
+
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    fn get<'r>(&'r self, idx: usize) -> Option<impl Ref<'r, T>>
-    where
-        's: 'r;
-    fn map_get(self, idx: usize) -> Option<impl Ref<'s, T>>;
+    fn get(&self, idx: usize) -> Option<Self::Ref<'_>>;
+    fn map_get(self, idx: usize) -> Option<Self::Ref<'s>>;
 }
 
 pub trait VectorSliceMut<'s, T: 's>: VectorSlice<'s, T>
 where
     Self: Sized,
 {
-    fn get_mut<'r>(&'r mut self, idx: usize) -> Option<impl RefMut<'r, T>>
+    type RefMut<'r>: RefMut<'r, T>
     where
         's: 'r;
-    fn split_at_mut(self, idx: usize) -> (Self, Self);
-    fn split_first_mut(self) -> Option<(impl RefMut<'s, T>, Self)>;
 
-    fn map_get_mut(self, idx: usize) -> Option<impl RefMut<'s, T>>
+    fn get_mut(&mut self, idx: usize) -> Option<Self::RefMut<'_>>;
+    fn split_at_mut(self, idx: usize) -> (Self, Self);
+    fn split_first_mut(self) -> Option<(Self::RefMut<'s>, Self)>;
+
+    fn map_get_mut(self, idx: usize) -> Option<Self::RefMut<'s>>
     where
         Self: Sized,
     {
@@ -145,44 +147,41 @@ impl<T> Vector<T> for Vec<T> {
 }
 
 impl<'s, T> VectorSlice<'s, T> for &'s [T] {
+    type Ref<'r> = &'r T where 's: 'r;
+
     fn len(&self) -> usize {
         (*self).len()
     }
 
-    fn get<'r>(&'r self, idx: usize) -> Option<impl Ref<'r, T>>
-    where
-        's: 'r,
-    {
+    fn get(&self, idx: usize) -> Option<Self::Ref<'_>> {
         (*self).get(idx)
     }
 
-    fn map_get(self, idx: usize) -> Option<impl Ref<'s, T>> {
+    fn map_get(self, idx: usize) -> Option<Self::Ref<'s>> {
         self.get(idx)
     }
 }
 
 impl<'s, T> VectorSlice<'s, T> for &'s mut [T] {
+    type Ref<'r> = &'r T where 's: 'r;
+
     fn len(&self) -> usize {
         (**self).len()
     }
 
-    fn get<'r>(&'r self, idx: usize) -> Option<impl Ref<'r, T>>
-    where
-        's: 'r,
-    {
+    fn get(&self, idx: usize) -> Option<Self::Ref<'_>> {
         (**self).get(idx)
     }
 
-    fn map_get(self, idx: usize) -> Option<impl Ref<'s, T>> {
+    fn map_get(self, idx: usize) -> Option<Self::Ref<'s>> {
         (*self).get(idx)
     }
 }
 
 impl<'s, T> VectorSliceMut<'s, T> for &'s mut [T] {
-    fn get_mut<'r>(&'r mut self, idx: usize) -> Option<impl RefMut<'r, T>>
-    where
-        's: 'r,
-    {
+    type RefMut<'r> = &'r mut T where 's: 'r;
+
+    fn get_mut(&mut self, idx: usize) -> Option<Self::RefMut<'_>> {
         (*self).get_mut(idx)
     }
 
@@ -190,7 +189,7 @@ impl<'s, T> VectorSliceMut<'s, T> for &'s mut [T] {
         (*self).split_at_mut(idx)
     }
 
-    fn split_first_mut(self) -> Option<(impl RefMut<'s, T>, Self)> {
+    fn split_first_mut(self) -> Option<(Self::RefMut<'s>, Self)> {
         (*self).split_first_mut()
     }
 }

@@ -6,7 +6,7 @@ use core::cmp::{Ord, Ordering};
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem;
-use core::ops::{Deref, DerefMut};
+use core::ops::Deref;
 use nonmax::NonMaxU64;
 
 pub const B: usize = 8;
@@ -35,11 +35,7 @@ mod children_serde {
     where
         S: Serializer,
     {
-        serializer.collect_seq(
-            children
-                .iter()
-                .map(|x| x.clone().map(|x| Into::<u64>::into(x))),
-        )
+        serializer.collect_seq(children.iter().map(|x| (*x).map(Into::<u64>::into)))
     }
 
     pub fn deserialize<'de, D>(
@@ -277,7 +273,7 @@ pub struct BVecTreeMapData<S, K, V> {
     pub root: Option<NonMaxU64>,
     pub free_head: Option<NonMaxU64>,
     pub tree_buf: S,
-    pub len: usize,
+    pub len: u64,
     pub _phantom: PhantomData<(K, V)>,
 }
 
@@ -288,7 +284,7 @@ impl<S: Default + Vector<BVecTreeNode<K, V>>, K, V> Default for BVecTreeMapData<
             free_head: None,
             tree_buf: S::default(),
             len: 0,
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 }
@@ -325,11 +321,11 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
             root: None,
             free_head: None,
             len: 0,
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         })
     }
 
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u64 {
         self.0.len
     }
 
@@ -441,9 +437,9 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        let ret = self.insert_internal((key, value));
-        if ret.is_some() {
-            Some(ret.unwrap().1)
+        let prev = self.insert_internal((key, value));
+        if let Some((_, prev_val)) = prev {
+            Some(prev_val)
         } else {
             self.0.len += 1;
             None
@@ -804,7 +800,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                         [Some((start_id, slice)), None]
                     }
                 })
-                .filter_map(|x| x)
+                .flatten()
                 .collect();
         }
         let (left_node, rest) = slices.remove(&left).unwrap().split_first_mut().unwrap();
@@ -823,7 +819,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                         [Some((start_id, slice)), None]
                     }
                 })
-                .filter_map(|x| x)
+                .flatten()
                 .collect();
         }
         let (right_node, _rest) = slices.remove(&right).unwrap().split_first_mut().unwrap();
@@ -873,6 +869,9 @@ impl<S, K, V> BVecTreeMap<S, K, V> {
         &self.0
     }
 
+    /// # Safety
+    /// Caller must maintain map valid (this is used for persistence only)
+    /// TODO: write better safety section
     pub unsafe fn inner_mut(&mut self) -> &mut BVecTreeMapData<S, K, V> {
         &mut self.0
     }
@@ -881,7 +880,10 @@ impl<S, K, V> BVecTreeMap<S, K, V> {
         self.0
     }
 
-    pub unsafe fn from_raw(data: BVecTreeMapData<S, K, V>) -> Self {
+    /// # Safety
+    /// Must be called with a valid map obtained from into_inner() or equivalent
+    /// TODO: write better safety section
+    pub unsafe fn from_inner(data: BVecTreeMapData<S, K, V>) -> Self {
         Self(data)
     }
 }
@@ -916,7 +918,7 @@ mod tests {
                 assert_eq!(set.contains(i), tree.contains_key(i));
             }
 
-            assert_eq!(tree.len(), set.len());
+            assert_eq!(tree.len(), set.len() as u64);
         }
     }
 
@@ -942,19 +944,19 @@ mod tests {
             entries_r.shuffle(&mut rng);
 
             for i in entries_r.iter().take(200) {
-                let ret_set = set.remove(&i);
-                let ret_tree = tree.remove(&i);
+                let ret_set = set.remove(i);
+                let ret_tree = tree.remove(i);
 
                 assert!(
                     ret_tree.is_some() || !ret_set,
                     "{:?} {:?} {:?}",
                     ret_tree,
                     i,
-                    tree.contains_key(&i)
+                    tree.contains_key(i)
                 );
             }
 
-            assert_eq!(tree.len(), set.len());
+            assert_eq!(tree.len(), set.len() as u64);
         }
     }
 }

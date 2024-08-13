@@ -14,8 +14,11 @@ pub trait IndexedStorage<T> {
 
     fn load(&self, idx: usize) -> Result<T, Self::Error>;
     fn store(&mut self, idx: usize, object: impl Borrow<T>) -> Result<(), Self::Error>;
+    fn truncate(&mut self, len: usize) -> Result<(), Self::Error>;
     fn len(&self) -> Result<usize, Self::Error>;
-    fn clear(&mut self) -> Result<(), Self::Error>;
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.truncate(0)
+    }
 }
 
 use crate::huge_vec::IOTransformer;
@@ -31,49 +34,49 @@ pub struct FsStore<T, IOT> {
 #[derive(thiserror::Error, Debug)]
 pub enum FsStoreError<IOTErr> {
     #[error("Could not create directory")]
-    DirCreateError(#[source] io::Error),
+    DirCreate(#[source] io::Error),
 
     #[error("Could not open metadata file")]
-    MetadataOpenError(#[source] io::Error),
+    MetadataOpen(#[source] io::Error),
 
     #[error("Could not seek within metadata")]
-    MetadataSeekError(#[source] io::Error),
+    MetadataSeek(#[source] io::Error),
 
     #[error("Could not create metadata reader")]
-    MetadataReadPrepError(#[source] IOTErr),
+    MetadataReadPrep(#[source] IOTErr),
 
     #[error("Could not read/parse metadata")]
-    MetadataReadError(#[source] Box<bincode::ErrorKind>),
+    MetadataRead(#[source] Box<bincode::ErrorKind>),
 
     #[error("Could not create metadata writer")]
-    MetadataWritePrepError(#[source] IOTErr),
+    MetadataWritePrep(#[source] IOTErr),
 
     #[error("Could not write metadata")]
-    MetadataWriteError(#[source] Box<bincode::ErrorKind>),
+    MetadataWrite(#[source] Box<bincode::ErrorKind>),
 
     #[error("Could not open stored object file")]
-    DataOpenError(#[source] io::Error),
+    DataOpen(#[source] io::Error),
 
     #[error("Could not delete stored object file")]
-    DataRemoveError(#[source] io::Error),
+    DataRemove(#[source] io::Error),
 
     #[error("Could not create object loader")]
-    DataLoadPrepError(#[source] IOTErr),
+    DataLoadPrep(#[source] IOTErr),
 
     #[error("Could not load stored object")]
-    DataLoadError(#[source] Box<bincode::ErrorKind>),
+    DataLoad(#[source] Box<bincode::ErrorKind>),
 
     #[error("Could not create object storer")]
-    DataStorePrepError(#[source] IOTErr),
+    DataStorePrep(#[source] IOTErr),
 
     #[error("Could not store object")]
-    DataStoreError(#[source] Box<bincode::ErrorKind>),
+    DataStore(#[source] Box<bincode::ErrorKind>),
 
     #[error("Tried to store non-contiguous data (expected index<={len}, got {idx})")]
-    NonContiguousStoreError { len: usize, idx: usize },
+    NonContiguousStore { len: usize, idx: usize },
 
     #[error("Cannot load index {idx}: out of bounds (len={len})")]
-    OutOfBoundsLoadError { len: usize, idx: usize },
+    OutOfBoundsLoad { len: usize, idx: usize },
 }
 
 impl<T, IOT> FsStore<T, IOT>
@@ -85,20 +88,21 @@ where
         root: impl AsRef<Path>,
         io_transformer: IOT,
     ) -> Result<Self, FsStoreError<IOT::Error>> {
-        fs::create_dir_all(root.as_ref()).map_err(FsStoreError::DirCreateError)?;
+        fs::create_dir_all(root.as_ref()).map_err(FsStoreError::DirCreate)?;
 
         let mut metadata_file = fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .read(true)
             .open(root.as_ref().join("meta"))
-            .map_err(FsStoreError::MetadataOpenError)?;
+            .map_err(FsStoreError::MetadataOpen)?;
 
         let metadata_size = metadata_file
             .seek(io::SeekFrom::End(0))
             .and_then(|_| metadata_file.stream_position())
             .and_then(|size| metadata_file.seek(io::SeekFrom::Start(0)).map(|_| size))
-            .map_err(FsStoreError::MetadataSeekError)?;
+            .map_err(FsStoreError::MetadataSeek)?;
 
         let metadata: BasicStorageMeta = if metadata_size == 0 {
             BasicStorageMeta::default()
@@ -106,8 +110,8 @@ where
             let reader = BufReader::new(&metadata_file);
             let reader = io_transformer
                 .wrap_reader(reader)
-                .map_err(FsStoreError::MetadataReadPrepError)?;
-            bincode::deserialize_from(reader).map_err(FsStoreError::MetadataReadError)?
+                .map_err(FsStoreError::MetadataReadPrep)?;
+            bincode::deserialize_from(reader).map_err(FsStoreError::MetadataRead)?
         };
 
         Ok(Self {
@@ -124,18 +128,18 @@ where
 
         self.metadata_file
             .seek(io::SeekFrom::Start(0))
-            .map_err(FsStoreError::MetadataSeekError)?;
+            .map_err(FsStoreError::MetadataSeek)?;
 
         let writer = BufWriter::new(&mut self.metadata_file);
         let mut writer = self
             .io_transformer
             .wrap_writer(writer)
-            .map_err(FsStoreError::MetadataWritePrepError)?;
+            .map_err(FsStoreError::MetadataWritePrep)?;
         bincode::serialize_into(&mut writer, &self.metadata)
-            .map_err(FsStoreError::MetadataWriteError)?;
+            .map_err(FsStoreError::MetadataWrite)?;
         writer
             .flush()
-            .map_err(|e| FsStoreError::MetadataWriteError(Box::new(bincode::ErrorKind::Io(e))))?;
+            .map_err(|e| FsStoreError::MetadataWrite(Box::new(bincode::ErrorKind::Io(e))))?;
 
         Ok(())
     }
@@ -157,7 +161,7 @@ where
 
     fn load(&self, idx: usize) -> Result<T, Self::Error> {
         if idx >= self.metadata.len {
-            return Err(FsStoreError::OutOfBoundsLoadError {
+            return Err(FsStoreError::OutOfBoundsLoad {
                 len: self.metadata.len,
                 idx,
             });
@@ -167,47 +171,51 @@ where
         let file = fs::OpenOptions::new()
             .read(true)
             .open(path)
-            .map_err(FsStoreError::DataOpenError)?;
+            .map_err(FsStoreError::DataOpen)?;
         let reader = BufReader::new(file);
 
         bincode::deserialize_from(
             self.io_transformer
                 .wrap_reader(reader)
-                .map_err(FsStoreError::DataLoadPrepError)?,
+                .map_err(FsStoreError::DataLoadPrep)?,
         )
-        .map_err(FsStoreError::DataLoadError)
+        .map_err(FsStoreError::DataLoad)
     }
 
     fn store(&mut self, idx: usize, object: impl Borrow<T>) -> Result<(), Self::Error> {
         use io::Write;
-        if idx > self.metadata.len {
-            return Err(FsStoreError::NonContiguousStoreError {
-                len: self.metadata.len,
-                idx,
-            });
-        } else if idx == self.metadata.len {
-            self.metadata.len += 1;
-            self.write_metadata()?;
+        match idx.cmp(&self.metadata.len) {
+            std::cmp::Ordering::Equal => {
+                self.metadata.len += 1;
+                self.write_metadata()?;
+            }
+            std::cmp::Ordering::Greater => {
+                return Err(FsStoreError::NonContiguousStore {
+                    len: self.metadata.len,
+                    idx,
+                });
+            }
+            _ => (),
         }
 
         let path = self.index_path(idx);
-        fs::create_dir_all(path.parent().unwrap()).map_err(FsStoreError::DataOpenError)?; // unwrap is safe because we know the path has a parent
+        fs::create_dir_all(path.parent().unwrap()).map_err(FsStoreError::DataOpen)?; // unwrap is safe because we know the path has a parent
 
         let file = fs::OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(path)
-            .map_err(FsStoreError::DataOpenError)?;
+            .map_err(FsStoreError::DataOpen)?;
 
         let mut writer = self
             .io_transformer
             .wrap_writer(file)
-            .map_err(FsStoreError::DataStorePrepError)?;
-        bincode::serialize_into(&mut writer, object.borrow())
-            .map_err(FsStoreError::DataStoreError)?;
+            .map_err(FsStoreError::DataStorePrep)?;
+        bincode::serialize_into(&mut writer, object.borrow()).map_err(FsStoreError::DataStore)?;
         writer
             .flush()
-            .map_err(|e| FsStoreError::DataStoreError(Box::new(bincode::ErrorKind::Io(e))))?;
+            .map_err(|e| FsStoreError::DataStore(Box::new(bincode::ErrorKind::Io(e))))?;
 
         Ok(())
     }
@@ -216,10 +224,14 @@ where
         Ok(self.metadata.len)
     }
 
-    fn clear(&mut self) -> Result<(), Self::Error> {
-        let old_len = self.metadata.len;
+    fn truncate(&mut self, new_len: usize) -> Result<(), Self::Error> {
+        if new_len >= self.metadata.len {
+            return Ok(());
+        }
 
-        self.metadata.len = 0;
+        let old_len = self.metadata.len;
+        self.metadata.len = new_len;
+
         match self.write_metadata() {
             Ok(_) => (),
             Err(e) => {
@@ -230,7 +242,7 @@ where
 
         for idx in 0..old_len {
             let path = self.index_path(idx);
-            fs::remove_file(path).map_err(FsStoreError::DataRemoveError)?;
+            fs::remove_file(path).map_err(FsStoreError::DataRemove)?;
         }
 
         Ok(())
@@ -264,11 +276,11 @@ mod test {
             // can't store non-contiguous objects
             assert!(matches!(
                 store.store(101, 0).unwrap_err(),
-                FsStoreError::NonContiguousStoreError { len: 100, idx: 101 }
+                FsStoreError::NonContiguousStore { len: 100, idx: 101 }
             ));
 
             // check everything was stored in memory
-            assert_eq!(store.len(), 100);
+            assert_eq!(store.len().unwrap(), 100);
 
             for idx in 0..100 {
                 let val = store.load(idx).unwrap();
@@ -278,7 +290,7 @@ mod test {
             // can't read out of bounds
             assert!(matches!(
                 store.load(101).unwrap_err(),
-                FsStoreError::OutOfBoundsLoadError { len: 100, idx: 101 }
+                FsStoreError::OutOfBoundsLoad { len: 100, idx: 101 }
             ));
         }
 
@@ -286,7 +298,7 @@ mod test {
             // reopen the store and check that everything is still there
             let mut store = store_builder();
 
-            assert_eq!(store.len(), 100);
+            assert_eq!(store.len().unwrap(), 100);
 
             for idx in 0..100 {
                 let val = store.load(idx).unwrap();
@@ -296,12 +308,12 @@ mod test {
             // still can't store non-contiguous objects
             assert!(matches!(
                 store.store(101, 0).unwrap_err(),
-                FsStoreError::NonContiguousStoreError { len: 100, idx: 101 }
+                FsStoreError::NonContiguousStore { len: 100, idx: 101 }
             ));
             // still can't read out of bounds
             assert!(matches!(
                 store.load(101).unwrap_err(),
-                FsStoreError::OutOfBoundsLoadError { len: 100, idx: 101 }
+                FsStoreError::OutOfBoundsLoad { len: 100, idx: 101 }
             ));
         }
     }

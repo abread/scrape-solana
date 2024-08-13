@@ -1,4 +1,4 @@
-use std::{fmt::Debug, io};
+use std::io;
 
 pub trait IOTransformer {
     type Error: std::error::Error + Send + Sync + 'static;

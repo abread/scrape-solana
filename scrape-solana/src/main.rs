@@ -1,29 +1,12 @@
-use eyre::{eyre, Context, Result};
-use rand::Rng;
-use scrape_solana::{AccountID, Db};
-use std::{
-    fmt::Debug,
-    io,
-    ops::Range,
-    path::PathBuf,
-    str::FromStr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
-    time::{Duration, Instant},
-};
+use eyre::{eyre, Result, WrapErr};
+use scrape_solana::{solana_api::SolanaApi, workers};
+use std::{fmt::Debug, path::PathBuf, str::FromStr, sync::Arc};
 
 use clap::Parser;
-use solana_client::{
-    client_error::{ClientError, ClientErrorKind},
-    rpc_client::RpcClient,
-    rpc_config::RpcBlockConfig,
-    rpc_request::RpcError,
-};
+use solana_client::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 
-#[derive(clap::Parser)]
+#[derive(clap::Parser, Clone)]
 #[command(name = "scape-solana", version, about, long_about = None)]
 struct App {
     /// Database file path
@@ -37,6 +20,10 @@ struct App {
     /// Sharded fetching (format: N:id where id is between 0 and N-1). Node id fetches blocks where blocknum % N = id
     #[arg(short, long, default_value = "1:0")]
     shard_config: ShardConfig,
+
+    /// Chance of trying to fetch a block ahead of the middle slot.
+    #[arg(short, long, default_value = "0.5")]
+    forward_fetch_chance: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -47,152 +34,72 @@ struct ShardConfig {
 
 fn main() -> Result<()> {
     let args = App::parse();
-    let db = unsafe { Db::open(args.db_root_path, io::stdout()) }.wrap_err("failed to open db")?;
 
     let endpoint_url = match args.endpoint_url.as_ref() {
         "devnet" => "https://api.devnet.solana.com",
         "testnet" => "https://api.testnet.solana.com",
         "mainnet-beta" => "https://api.mainnet-beta.solana.com",
         x => x,
-    };
+    }
+    .to_owned();
 
-    let client = RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
-    let next_blocknum = if let Some(bnum) = db.last_block_slot() {
-        bnum.saturating_sub(args.shard_config.n)
-    } else {
-        println!("empty dataset: fetching latest block slot");
-        let slot = client
-            .get_epoch_info()
-            .wrap_err("failed to get latest block slot")?
-            .absolute_slot;
-        println!("latest block is {slot}");
+    let default_middle_slot_getter = {
+        let args = args.clone();
+        let endpoint_url = endpoint_url.to_owned();
+        move || {
+            let client =
+                RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
+            let slot = client
+                .get_epoch_info()
+                .expect("failed to get latest block slot")
+                .absolute_slot;
 
-        let slot_shard = slot % args.shard_config.n;
-        if slot_shard != args.shard_config.id {
-            slot.saturating_sub(slot_shard + args.shard_config.n - args.shard_config.id)
-        } else {
+            let slot_shard = slot % args.shard_config.n;
+            let slot = if slot_shard != args.shard_config.id {
+                slot.saturating_sub(slot_shard + args.shard_config.n - args.shard_config.id)
+            } else {
+                slot
+            };
+
+            assert!(
+                slot % args.shard_config.n == args.shard_config.id,
+                "mismatch between last stored block and shard configuration. expected shard id {}, got {}",
+                args.shard_config.id,
+                slot % args.shard_config.n
+            );
+
             slot
         }
     };
 
-    assert!(
-        next_blocknum % args.shard_config.n == args.shard_config.id,
-        "mismatch between last stored block and shard configuration. expected shard id {}, got {}",
-        args.shard_config.id,
-        next_blocknum % args.shard_config.n
+    let api = Arc::new(SolanaApi::new(endpoint_url.to_owned()));
+    let (db_tx, db_handle) =
+        workers::spawn_db_worker(args.db_root_path, default_middle_slot_getter);
+    let (block_handler_tx, block_handler_handle) =
+        workers::spawn_block_handler(Arc::clone(&api), db_tx.clone());
+    let (block_fetcher_tx, block_fetcher_handle) = workers::spawn_block_fetcher(
+        args.forward_fetch_chance,
+        args.shard_config.n,
+        api,
+        block_handler_tx,
+        db_tx,
     );
 
-    let db = Arc::new(Mutex::new(db));
-
-    let should_exit = &*Box::leak(Box::new(AtomicBool::new(false)));
-    ctrlc::set_handler(|| {
-        println!("received exit signal");
-        should_exit.store(true, Ordering::Relaxed);
+    ctrlc::set_handler(move || {
+        println!("received stop signal");
+        block_fetcher_tx
+            .send(workers::BlockFetcherOperation::Stop)
+            .expect("could not send stop signal to block fetcher");
     })
     .wrap_err("could not set Ctrl+C handler")?;
 
-    let db2 = Arc::clone(&db); // capture db
-    std::thread::spawn(move || loop {
-        println!("saving db...");
-        db2.lock().unwrap().sync().unwrap();
-        println!("db saved");
-        std::thread::sleep(Duration::from_secs(
-            rand::thread_rng().gen_range(10..20) * 60,
-        ))
-    });
-
-    std::thread::sleep(Duration::from_millis(500)); // ensure we respect rate limits
-
-    let mut block_config = RpcBlockConfig::default();
-    block_config.max_supported_transaction_version = Some(0);
-    let block_config = block_config;
-
-    const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
-
-    let account_fetcher = |ids: &[AccountID]| -> eyre::Result<(
-        Vec<Option<solana_sdk::account::Account>>,
-        Range<u64>,
-    )> {
-        println!("fetching accounts {:?}", &ids);
-        let ids = ids
-            .iter()
-            .map(|id| solana_sdk::pubkey::Pubkey::new_from_array(id.to_owned().into()))
-            .collect::<Vec<_>>();
-        let min_height = client.get_block_height()?;
-        std::thread::sleep(MIN_WAIT);
-        let accounts = client.get_multiple_accounts(&ids)?;
-        std::thread::sleep(MIN_WAIT);
-        let max_height = client.get_block_height()?;
-        std::thread::sleep(MIN_WAIT);
-
-        Ok((accounts, min_height..max_height))
-    };
-
-    for block_slot in (0..=next_blocknum)
-        .rev()
-        .step_by(args.shard_config.n as usize)
-    {
-        if should_exit.load(Ordering::Relaxed) {
-            break;
-        }
-
-        // retry after reqwest retries
-        let mut larger_timeout = Duration::from_secs(1);
-        let block = loop {
-            match client.get_block_with_config(block_slot, block_config) {
-                Ok(b) => break Ok(b),
-                Err(ClientError {
-                    kind: ClientErrorKind::Reqwest(e),
-                    ..
-                }) if e.is_timeout() => {
-                    eprintln!("block #{block_slot} fetch timeout, retrying in {larger_timeout:#?}");
-                    std::thread::sleep(larger_timeout);
-                    larger_timeout *= 2;
-                    continue;
-                }
-                Err(e) => break Err(e),
-            }
-        };
-
-        // handle fetch errors
-        let block = match block {
-            Ok(b) => b,
-            Err(ClientError {
-                kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32009, .. }),
-                ..
-            }) => {
-                eprintln!(
-                    "skipped block {block_slot}: not present in Solana nodes nor long-term storage"
-                );
-                continue;
-            }
-            Err(ClientError {
-                kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32007, .. }),
-                ..
-            }) => {
-                eprintln!(
-                    "skipped block {block_slot}: skipped, or missing due to ledger jump to recent snapshot"
-                );
-                continue;
-            }
-            r @ Err(_) => {
-                let r = r.wrap_err(format!("failed to fetch next block {block_slot}"));
-                eprintln!("{:?}", r.unwrap_err());
-                continue;
-            }
-        };
-
-        let save_start = Instant::now();
-        {
-            let mut d = db.lock().unwrap();
-            d.store_block(block_slot, block, account_fetcher)
-                .wrap_err_with(|| format!("failed to store block {block_slot}"))?;
-        }
-        let save_dur = Instant::now().duration_since(save_start);
-
-        println!("fetched and saved block {block_slot}");
-        std::thread::sleep(MIN_WAIT - save_dur.min(MIN_WAIT));
-    }
+    block_handler_handle
+        .join()
+        .expect("block handler panicked")?;
+    db_handle.join().expect("db worker panicked")?;
+    block_fetcher_handle
+        .join()
+        .expect("block fetcher panicked")?;
 
     println!("done");
     Ok(())

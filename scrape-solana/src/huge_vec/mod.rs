@@ -1,7 +1,7 @@
 use std::{
-    borrow::Borrow,
     cell::{Ref, RefCell, RefMut},
     fmt::Debug,
+    iter::{ExactSizeIterator, FusedIterator},
     ops::{Deref, DerefMut},
     rc::Rc,
 };
@@ -100,6 +100,10 @@ where
         })
     }
 
+    pub fn iter(&self) -> HugeVecIter<'_, T, Store, CHUNK_SZ> {
+        HugeVecIter::new(self)
+    }
+
     pub fn slice_mut(&mut self) -> HugeVecSliceMut<'_, T, Store, CHUNK_SZ> {
         HugeVecSliceMut {
             chunk_cache: &self.chunk_cache,
@@ -112,13 +116,69 @@ where
         self.len
     }
 
+    pub fn truncate(&mut self, new_len: u64) -> Result<(), HugeVecError<Store::Error>> {
+        if new_len >= self.len {
+            return Ok(());
+        }
+
+        let mut chunk_cache = self.chunk_cache.borrow_mut();
+
+        // cut out trailing chunks
+        let new_n_chunks =
+            new_len / CHUNK_SZ as u64 + if new_len % CHUNK_SZ as u64 > 0 { 1 } else { 0 };
+        chunk_cache.truncate(new_n_chunks as usize)?;
+
+        // truncate last chunk
+        let last_chunk = new_n_chunks.saturating_sub(1) as usize;
+        let last_chunk_len = (new_len % CHUNK_SZ as u64) as usize;
+        chunk_cache
+            .get(last_chunk)?
+            .borrow_mut()
+            .truncate(last_chunk_len);
+
+        self.len = new_len;
+
+        Ok(())
+    }
+
+    pub fn last(&self) -> Result<Option<ItemRef<'_, T, T, CHUNK_SZ>>, HugeVecError<Store::Error>> {
+        if self.len == 0 {
+            Ok(None)
+        } else {
+            self.get(self.len - 1).map(Some)
+        }
+    }
+
+    pub fn last_mut(
+        &mut self,
+    ) -> Result<Option<ItemRefMut<'_, T, T, CHUNK_SZ>>, HugeVecError<Store::Error>> {
+        if self.len == 0 {
+            Ok(None)
+        } else {
+            self.get_mut(self.len - 1).map(Some)
+        }
+    }
+
     pub fn sync(&mut self) -> Result<(), HugeVecError<Store::Error>> {
         self.chunk_cache.get_mut().sync()?;
         Ok(())
     }
 }
 
-struct ItemRef<'r, T, TR, const CHUNK_SZ: usize> {
+impl<'r, T, Store, const CHUNK_SZ: usize> IntoIterator for &'r HugeVec<T, Store, CHUNK_SZ>
+where
+    T: Debug,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+{
+    type Item = ItemRef<'r, T, T, CHUNK_SZ>;
+    type IntoIter = HugeVecIter<'r, T, Store, CHUNK_SZ>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+pub struct ItemRef<'r, T, TR, const CHUNK_SZ: usize> {
     chunk_rc: Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>,
     item_ref: Ref<'r, TR>,
 }
@@ -141,7 +201,7 @@ impl<'r, T, TR: 'r, const CHUNK_SZ: usize> vector_trees::Ref<'r, TR>
     }
 }
 
-struct ItemRefMut<'r, T, TR, const CHUNK_SZ: usize> {
+pub struct ItemRefMut<'r, T, TR, const CHUNK_SZ: usize> {
     chunk_rc: Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>,
     item_ref: RefMut<'r, TR>,
 }
@@ -172,7 +232,85 @@ impl<'r, T, TR: 'r, const CHUNK_SZ: usize> vector_trees::RefMut<'r, TR>
     }
 }
 
-struct HugeVecSliceMut<'s, T, Store, const CHUNK_SZ: usize>
+pub struct HugeVecIter<'v, T, Store, const CHUNK_SZ: usize>
+where
+    T: Debug,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+{
+    vec: &'v HugeVec<T, Store, CHUNK_SZ>,
+    len: u64,
+    idx: u64,
+}
+
+impl<'v, T, Store, const CHUNK_SZ: usize> HugeVecIter<'v, T, Store, CHUNK_SZ>
+where
+    T: Debug,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+{
+    fn new(vec: &'v HugeVec<T, Store, CHUNK_SZ>) -> Self {
+        Self {
+            vec,
+            len: vec.len,
+            idx: 0,
+        }
+    }
+}
+
+impl<'v, T, Store, const CHUNK_SZ: usize> Iterator for HugeVecIter<'v, T, Store, CHUNK_SZ>
+where
+    T: Debug,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+{
+    type Item = ItemRef<'v, T, T, CHUNK_SZ>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx >= self.len {
+            return None;
+        }
+
+        let res = self.vec.get(self.idx).unwrap();
+        self.idx += 1;
+        Some(res)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.len - self.idx;
+        (remaining as usize, Some(remaining as usize))
+    }
+}
+
+impl<'v, T, Store, const CHUNK_SZ: usize> FusedIterator for HugeVecIter<'v, T, Store, CHUNK_SZ>
+where
+    T: Debug,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+{
+}
+
+impl<'v, T, Store, const CHUNK_SZ: usize> ExactSizeIterator for HugeVecIter<'v, T, Store, CHUNK_SZ>
+where
+    T: Debug,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+{
+}
+
+impl<'v, T, Store, const CHUNK_SZ: usize> DoubleEndedIterator
+    for HugeVecIter<'v, T, Store, CHUNK_SZ>
+where
+    T: Debug,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.idx == self.len || self.len == 0 {
+            return None;
+        }
+
+        let res = self.vec.get(self.len - 1).unwrap();
+        self.len -= 1;
+        Some(res)
+    }
+}
+
+pub struct HugeVecSliceMut<'s, T, Store, const CHUNK_SZ: usize>
 where
     T: Debug,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
@@ -267,18 +405,17 @@ where
     T: Debug + 's,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
 {
+    type Ref<'r> = ItemRef<'r, T, T, CHUNK_SZ> where 's: 'r;
+
     fn len(&self) -> usize {
         self.len as usize
     }
 
-    fn get<'r>(&'r self, idx: usize) -> Option<impl vector_trees::Ref<'r, T>>
-    where
-        's: 'r,
-    {
+    fn get(&self, idx: usize) -> Option<Self::Ref<'_>> {
         self.get(idx as u64).ok()
     }
 
-    fn map_get(self, idx: usize) -> Option<impl vector_trees::Ref<'s, T>> {
+    fn map_get(self, idx: usize) -> Option<Self::Ref<'s>> {
         self.map_get(idx as u64).ok()
     }
 }
@@ -289,18 +426,22 @@ where
     T: Debug + 's,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
 {
-    fn get_mut<'r>(&'r mut self, idx: usize) -> Option<impl vector_trees::RefMut<'r, T>>
-    where
-        's: 'r,
-    {
-        self.get_mut(idx as u64).ok()
+    type RefMut<'r> = ItemRefMut<'r, T, T, CHUNK_SZ> where 's: 'r;
+
+    fn get_mut(&mut self, idx: usize) -> Option<Self::RefMut<'_>> {
+        match self.get_mut(idx as u64) {
+            Ok(x) => Some(x),
+            Err(HugeVecError::OutOfBoundsError { .. }) => None,
+            Err(e) => panic!("{e:#?}"),
+        }
     }
 
-    fn map_get_mut(self, idx: usize) -> Option<impl vector_trees::RefMut<'s, T>>
-    where
-        Self: Sized,
-    {
-        self.map_get_mut(idx as u64).ok()
+    fn map_get_mut(self, idx: usize) -> Option<Self::RefMut<'s>> {
+        match self.map_get_mut(idx as u64) {
+            Ok(x) => Some(x),
+            Err(HugeVecError::OutOfBoundsError { .. }) => None,
+            Err(e) => panic!("{e:#?}"),
+        }
     }
 
     fn split_at_mut(self, idx: usize) -> (Self, Self) {
@@ -322,7 +463,7 @@ where
         (left, right)
     }
 
-    fn split_first_mut(self) -> Option<(impl vector_trees::RefMut<'s, T>, Self)> {
+    fn split_first_mut(self) -> Option<(Self::RefMut<'s>, Self)> {
         if self.len == 0 {
             panic!("out of bounds");
         }
@@ -332,7 +473,9 @@ where
     }
 }
 
-struct HugeVecSlice<'s, T, Store, const CHUNK_SZ: usize>(HugeVecSliceMut<'s, T, Store, CHUNK_SZ>)
+pub struct HugeVecSlice<'s, T, Store, const CHUNK_SZ: usize>(
+    HugeVecSliceMut<'s, T, Store, CHUNK_SZ>,
+)
 where
     T: Debug,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>>;
@@ -371,19 +514,26 @@ where
     T: Debug + 's,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
 {
+    type Ref<'r> = ItemRef<'r, T, T, CHUNK_SZ> where 's: 'r;
+
     fn len(&self) -> usize {
         self.deref().len()
     }
 
-    fn get<'r>(&'r self, idx: usize) -> Option<impl vector_trees::Ref<'r, T>>
-    where
-        's: 'r,
-    {
-        self.deref().get(idx as u64).ok()
+    fn get(&self, idx: usize) -> Option<Self::Ref<'_>> {
+        match self.deref().get(idx as u64) {
+            Ok(x) => Some(x),
+            Err(HugeVecError::OutOfBoundsError { .. }) => None,
+            Err(e) => panic!("{e:#?}"),
+        }
     }
 
-    fn map_get(self, idx: usize) -> Option<impl vector_trees::Ref<'s, T>> {
-        self.map_get(idx as u64).ok()
+    fn map_get(self, idx: usize) -> Option<Self::Ref<'s>> {
+        match self.map_get(idx as u64) {
+            Ok(x) => Some(x),
+            Err(HugeVecError::OutOfBoundsError { .. }) => None,
+            Err(e) => panic!("{e:#?}"),
+        }
     }
 }
 
@@ -396,7 +546,7 @@ where
     type SliceMut<'s> = HugeVecSliceMut<'s, T, Store, CHUNK_SZ> where T: 's, Self: 's;
 
     fn clear(&mut self) {
-        self.clear();
+        self.clear().expect("clear error");
     }
 
     fn push(&mut self, value: T) {
@@ -461,7 +611,7 @@ mod chunk_cache {
         ) -> Result<Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>, Store::Error> {
             self.writeback_oldest_dirty()?;
             if self.cached_chunks.len() % CHUNK_CACHE_RECLAMATION_INTERVAL == 0
-                && self.cached_chunks.len() > 0
+                && !self.cached_chunks.is_empty()
             {
                 self.gc();
             }
@@ -503,6 +653,23 @@ mod chunk_cache {
 
         pub(crate) fn chunk_count(&self) -> usize {
             self.chunk_count
+        }
+
+        pub(crate) fn dirty_chunk_count(&self) -> usize {
+            self.cached_chunks
+                .values()
+                .filter(|(c, _)| (**c).borrow().is_dirty())
+                .count()
+        }
+
+        pub(crate) fn truncate(&mut self, n_chunks: usize) -> Result<(), Store::Error> {
+            // remove deleted chunks from cache
+            self.cached_chunks.retain(|&idx, _| idx > n_chunks);
+
+            // truncate storage
+            self.chunk_store.truncate(n_chunks)?;
+
+            Ok(())
         }
 
         pub(crate) fn sync(&mut self) -> Result<(), Store::Error> {
@@ -548,7 +715,7 @@ mod chunk_cache {
                 .map(|(idx, (_, chunk_last_use))| (*idx, *chunk_last_use))
                 .collect::<Vec<_>>();
             removable_chunks.sort_unstable_by(|(_, a_last_used), (_, b_last_used)| {
-                b_last_used.cmp(&a_last_used)
+                b_last_used.cmp(a_last_used)
             });
 
             let max_removed = removable_chunks.len() / 2;
@@ -660,7 +827,7 @@ mod test {
             fn $name() {
                 let dir = tempdir::TempDir::new(stringify!($name)).unwrap();
                 let store_builder = || FsStore::open(&dir, ZstdTransformer::default()).unwrap();
-                let vec_opener = || HugeVec::<_, _, $chunk_sz>::open(store_builder()).unwrap();
+                let vec_opener = || HugeVec::<_, _, $chunk_sz>::new(store_builder()).unwrap();
 
                 let num_items: u64 = $chunk_sz * $chunk_count + $extra_items;
                 let range = 0..num_items;
@@ -679,7 +846,7 @@ mod test {
                 }
 
                 {
-                    let mut vec = vec_opener();
+                    let vec = vec_opener();
 
                     for i in range.clone() {
                         assert_eq!(*vec.get(i).unwrap(), i);
@@ -698,18 +865,55 @@ mod test {
     );
 
     #[test]
+    fn truncate() {
+        let dir = tempdir::TempDir::new("truncate").unwrap();
+        let vec_opener = || {
+            let store = FsStore::open(&dir, ()).unwrap();
+            HugeVec::<u8, _, 4>::new(store).unwrap()
+        };
+
+        {
+            let mut vec = vec_opener();
+            for i in 0..=255u8 {
+                vec.push(i).unwrap();
+            }
+        }
+
+        for offset in (0..4).rev() {
+            let prev_len = {
+                let prev_offset = offset + 1;
+                if prev_offset == 4 {
+                    256
+                } else {
+                    (prev_offset + 1) * 10 + prev_offset
+                }
+            };
+
+            let mut vec = vec_opener();
+            assert_eq!(
+                vec.iter().map(|i| *i).collect::<Vec<_>>(),
+                (0..prev_len as u8).collect::<Vec<_>>()
+            );
+            vec.truncate(((offset + 1) * 10 + offset) as u64).unwrap();
+        }
+
+        let vec = vec_opener();
+        assert_eq!(
+            vec.iter().map(|i| *i).collect::<Vec<_>>(),
+            (0..10u8).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn constant_seq_write_memuse() {
         let dir = tempdir::TempDir::new("constant_seq_write_memuse").unwrap();
-        let mut vec = HugeVec::<u8, (), 1>::open(&dir, ()).unwrap();
+        let store = FsStore::open(&dir, ()).unwrap();
+        let mut vec = HugeVec::<u8, _, 1>::new(store).unwrap();
 
         for _ in 0..(CHUNK_CACHE_RECLAMATION_INTERVAL * 10) {
             vec.push(42).unwrap();
 
-            let num_dirty_chunks = vec
-                .chunk_cache
-                .iter()
-                .filter(|(_, (chunk, _))| chunk.is_dirty())
-                .count();
+            let num_dirty_chunks = vec.chunk_cache.borrow().dirty_chunk_count();
             assert!(num_dirty_chunks < 2);
         }
     }
@@ -722,7 +926,7 @@ mod test {
             writebacks: AtomicU64,
         }
         impl IOTransformer for &Recorder {
-            type Error = ();
+            type Error = std::convert::Infallible;
 
             fn wrap_reader(
                 &self,
