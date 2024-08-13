@@ -213,7 +213,7 @@ where
             }
         }
 
-        for idx in 0..old_len {
+        for idx in new_len..old_len {
             let path = self.index_path(idx);
             fs::remove_file(path).map_err(FsStoreError::DataRemove)?;
         }

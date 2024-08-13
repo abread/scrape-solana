@@ -117,7 +117,7 @@ where
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len > 0
+        self.len == 0
     }
 
     pub fn truncate(&mut self, new_len: u64) -> Result<(), HugeVecError<Store::Error>> {
@@ -130,15 +130,25 @@ where
         // cut out trailing chunks
         let new_n_chunks =
             new_len / CHUNK_SZ as u64 + if new_len % CHUNK_SZ as u64 > 0 { 1 } else { 0 };
+        assert!(new_n_chunks * CHUNK_SZ as u64 >= new_len);
+
         chunk_cache.truncate(new_n_chunks as usize)?;
 
         // truncate last chunk
-        let last_chunk = new_n_chunks.saturating_sub(1) as usize;
-        let last_chunk_len = (new_len % CHUNK_SZ as u64) as usize;
-        chunk_cache
-            .get(last_chunk)?
-            .borrow_mut()
-            .truncate(last_chunk_len);
+        if new_len % CHUNK_SZ as u64 > 0 {
+            let last_chunk = new_n_chunks.saturating_sub(1) as usize;
+            let last_chunk_len = (new_len % CHUNK_SZ as u64) as usize;
+
+            assert_eq!(
+                new_n_chunks.saturating_sub(1) * CHUNK_SZ as u64 + last_chunk_len as u64,
+                new_len
+            );
+
+            chunk_cache
+                .get(last_chunk)?
+                .borrow_mut()
+                .truncate(last_chunk_len);
+        }
 
         self.len = new_len;
 
@@ -668,10 +678,13 @@ mod chunk_cache {
 
         pub(crate) fn truncate(&mut self, n_chunks: usize) -> Result<(), Store::Error> {
             // remove deleted chunks from cache
-            self.cached_chunks.retain(|&idx, _| idx > n_chunks);
+            self.cached_chunks.retain(|&idx, _| idx < n_chunks);
 
             // truncate storage
             self.chunk_store.truncate(n_chunks)?;
+
+            // update chunk count
+            self.chunk_count = n_chunks;
 
             Ok(())
         }
@@ -897,16 +910,23 @@ mod test {
             let mut vec = vec_opener();
             assert_eq!(
                 vec.iter().map(|i| *i).collect::<Vec<_>>(),
-                (0..prev_len as u8).collect::<Vec<_>>()
+                (0..=(prev_len - 1) as u8).collect::<Vec<_>>()
             );
             vec.truncate(((offset + 1) * 10 + offset) as u64).unwrap();
         }
 
+        {
+            let mut vec = vec_opener();
+            assert_eq!(
+                vec.iter().map(|i| *i).collect::<Vec<_>>(),
+                (0..10u8).collect::<Vec<_>>()
+            );
+
+            vec.truncate(0).unwrap();
+        }
+
         let vec = vec_opener();
-        assert_eq!(
-            vec.iter().map(|i| *i).collect::<Vec<_>>(),
-            (0..10u8).collect::<Vec<_>>()
-        );
+        assert!(vec.is_empty());
     }
 
     #[test]
