@@ -20,6 +20,8 @@ use huge_map::MapFsStore;
 mod monotonous_block_db;
 use monotonous_block_db::MonotonousBlockDb;
 
+const MAX_AUTO_ACCOUNT_DATA_LOSS: u64 = 2 * 1024 * 1024; // 2MiB
+
 pub(crate) type HugeVec<T, const CHUNK_SZ: usize> = crate::huge_vec::HugeVec<
     T,
     FsStore<crate::huge_vec::Chunk<T, CHUNK_SZ>, ZstdTransformer>,
@@ -252,8 +254,69 @@ impl Db {
     }
 
     fn heal_accounts(&mut self, n_samples: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
+        if self.account_records.is_empty() {
+            issues.push("account records empty, missing endcap: reinserting".to_owned());
+            self.account_records.push(AccountRecord::endcap(0))?;
+            return Ok(());
+        }
+
+        while self.account_records.len() >= 2
+            && self
+                .account_records
+                .get(self.account_records.len() - 2)?
+                .is_endcap()
+        {
+            issues.push("account records have >1 trailing endcap: removing".to_owned());
+            self.account_records
+                .truncate(self.account_records.len() - 1)?;
+        }
+
+        if self
+            .account_records
+            .last()?
+            .map(|b| !b.is_endcap() || b.data_start_idx > self.account_data.len())
+            .unwrap()
+        {
+            let (n_bad_accounts, n_bad_account_data_bytes) = {
+                let new_endcap_idx = self
+                    .account_records
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, account_rec)| account_rec.data_start_idx <= self.account_data.len());
+
+                if let Some((idx, account_rec)) = new_endcap_idx {
+                    let n_bad_account_data_bytes =
+                        self.account_data.len() - account_rec.data_start_idx;
+                    let n_bad_accounts = self.account_records.len() - (idx as u64 + 1);
+                    (n_bad_accounts, n_bad_account_data_bytes)
+                } else {
+                    let n_bad_account_data_bytes = self.account_data.len();
+                    let n_bad_accounts = self.account_records.len();
+                    (n_bad_accounts, n_bad_account_data_bytes)
+                }
+            };
+
+            if n_bad_accounts >= MAX_AUTO_ACCOUNT_DATA_LOSS
+                || n_bad_account_data_bytes >= MAX_AUTO_ACCOUNT_DATA_LOSS
+            {
+                issues.push(format!("account records bad endcap: would drop {} accounts and {} bytes of data to autofix (out of {} accounts and {} account data bytes). aborting", n_bad_accounts, n_bad_account_data_bytes, self.account_records.len(), self.account_data.len()));
+                return Err(eyre!(
+                    "account records missing endcap. too many dropped account_data/accounts to autofix"
+                ));
+            } else {
+                issues.push(format!("account records bad endcap: dropped {} accounts and {} bytes of data to autofix (out of {} accounts and {} account data bytes)", n_bad_accounts, n_bad_account_data_bytes, self.account_records.len(), self.account_data.len()));
+                self.account_records
+                    .truncate(self.account_records.len() - n_bad_accounts)?;
+                self.account_data
+                    .truncate(self.account_data.len() - n_bad_account_data_bytes)?;
+            }
+        }
+
+        let endcap_idx = self.account_records.len() - 1;
         let elements_to_check = select_random_elements(&self.account_records, n_samples)
             .map(|(idx, _)| idx)
+            .filter(|&idx| idx as u64 != endcap_idx)
             .collect::<Vec<_>>();
 
         for idx in elements_to_check {

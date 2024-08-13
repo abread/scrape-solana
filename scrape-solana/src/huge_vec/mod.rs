@@ -116,6 +116,10 @@ where
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len > 0
+    }
+
     pub fn truncate(&mut self, new_len: u64) -> Result<(), HugeVecError<Store::Error>> {
         if new_len >= self.len {
             return Ok(());

@@ -103,7 +103,7 @@ mod test {
         {
             let mut writer = io_transformer.wrap_writer(&mut pipe).unwrap();
             writer.write_all(&data).unwrap();
-            writer.flush();
+            writer.flush().unwrap();
         }
 
         pipe.set_position(0);
@@ -111,7 +111,7 @@ mod test {
         let read_back = {
             let mut reader = io_transformer.wrap_reader(&mut pipe).unwrap();
             let mut res = Vec::new();
-            reader.read_to_end(&mut res);
+            reader.read_to_end(&mut res).unwrap();
             res
         };
 

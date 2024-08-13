@@ -1,5 +1,4 @@
 use eyre::{eyre, WrapErr};
-use vector_trees::Vector;
 
 use super::{chunk_sz, HugeVec, MB};
 use crate::crc_checksum_serde::checksum;
