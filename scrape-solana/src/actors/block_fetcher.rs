@@ -69,9 +69,11 @@ fn block_fetcher_actor(
         };
 
         let block = api.fetch_block(*slot)?;
-        block_handler_tx
-            .send(block)
-            .map_err(|_| eyre!("block handler closed"))?;
+        if block_handler_tx.send(block).is_err() {
+            println!("block fetcher: block handler closed. terminating");
+            break;
+        }
+
         println!("fetched block at slot {slot} ({side_str} side)");
         *slot = next_slot;
     }

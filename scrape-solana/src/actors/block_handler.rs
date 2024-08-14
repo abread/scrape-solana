@@ -56,21 +56,27 @@ fn block_handler_actor(
             })
             .collect();
 
-        db_tx
-            .send(DbOperation::StoreBlock(block))
-            .map_err(|_| eyre!("db closed"))?;
+        if db_tx.send(DbOperation::StoreBlock(block)).is_err() {
+            println!("block handler: db closed. terminating");
+            break;
+        }
 
-        db_tx
+        if db_tx
             .send(DbOperation::FilterNewAccountSet {
-                set: account_ids,
+                account_ids,
                 reply: new_acc_tx.clone(),
             })
-            .map_err(|_| eyre::eyre!("db channel closed"))?;
+            .is_err()
+        {
+            println!("block handler: db closed. terminating");
+            break;
+        }
 
         if last_sync.elapsed() > Duration::from_secs(60) {
-            db_tx
-                .send(DbOperation::Sync)
-                .map_err(|_| eyre!("db closed"))?;
+            if db_tx.send(DbOperation::Sync).is_err() {
+                println!("block handler: db closed. terminating");
+                break;
+            }
             last_sync = Instant::now();
         }
     }
@@ -97,11 +103,16 @@ fn filtered_account_ids_handler_actor(
         while let Ok(mut more_account_ids) = rx.try_recv() {
             account_ids.append(&mut more_account_ids);
         }
+        if account_ids.is_empty() {
+            continue; // wait for more
+        }
 
-        let accounts = api.fetch_accounts(account_ids.clone())?;
-        db_tx
-            .send(DbOperation::StoreNewAccounts(accounts))
-            .map_err(|_| eyre!("db closed"))?;
+        dbg!(&account_ids);
+        let accounts = api.fetch_accounts(account_ids)?;
+        if db_tx.send(DbOperation::StoreNewAccounts(accounts)).is_err() {
+            println!("block handler[filtered account_ids handler]: db closed. terminating");
+            break;
+        }
     }
 
     Ok(())

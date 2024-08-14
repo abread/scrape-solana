@@ -13,7 +13,7 @@ use crate::{
 pub enum DbOperation {
     StoreBlock(Block),
     FilterNewAccountSet {
-        set: BTreeSet<AccountID>,
+        account_ids: BTreeSet<AccountID>,
         reply: SyncSender<BTreeSet<AccountID>>,
     },
     StoreNewAccounts(Vec<Account>),
@@ -50,13 +50,13 @@ fn actor(mut db: Db, rx: Receiver<DbOperation>) -> eyre::Result<()> {
                 println!("saved block at slot {slot}");
             }
             FilterNewAccountSet {
-                set: mut account_ids,
+                mut account_ids,
                 reply,
             } => {
                 account_ids.retain(|id| !db.has_account(id));
                 if reply.send(account_ids).is_err() {
-                    let _ = db.sync();
-                    return Err(eyre::eyre!("failed to send FilterNewAccountSet reply"));
+                    println!("db: failed to send FilterNewAccountSet reply");
+                    break;
                 }
             }
             StoreNewAccounts(new_accounts) => {
@@ -69,8 +69,8 @@ fn actor(mut db: Db, rx: Receiver<DbOperation>) -> eyre::Result<()> {
             ReadLimits { reply } => {
                 let limits = db.slot_limits()?;
                 if reply.send(limits).is_err() {
-                    let _ = db.sync();
-                    return Err(eyre::eyre!("failed to send ReadLimits reply"));
+                    println!("db: failed to send ReadLimits reply");
+                    break;
                 }
             }
             Sync => {
