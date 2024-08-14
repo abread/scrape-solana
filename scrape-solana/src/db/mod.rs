@@ -28,7 +28,7 @@ pub(crate) type HugeVec<T, const CHUNK_SZ: usize> = crate::huge_vec::HugeVec<
     CHUNK_SZ,
 >;
 /*pub(crate) type HugeMap<K, V, const CHUNK_SZ: usize> =
-    huge_map::HugeMap<K, V, MapFsStore<ZstdTransformer>, CHUNK_SZ>;*/
+huge_map::HugeMap<K, V, MapFsStore<ZstdTransformer>, CHUNK_SZ>;*/
 
 pub(crate) const fn chunk_sz<T>(target_mem_usage_bytes: usize) -> usize {
     let target_chunk_sz_bytes =

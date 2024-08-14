@@ -163,7 +163,9 @@ where
         }
     }
 
-    pub fn second_last(&self) -> Result<Option<ItemRef<'_, T, T, CHUNK_SZ>>, HugeVecError<Store::Error>> {
+    pub fn second_last(
+        &self,
+    ) -> Result<Option<ItemRef<'_, T, T, CHUNK_SZ>>, HugeVecError<Store::Error>> {
         if self.len < 2 {
             Ok(None)
         } else {

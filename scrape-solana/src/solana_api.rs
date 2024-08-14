@@ -106,7 +106,11 @@ impl SolanaApi {
 
         let mut larger_timeout = MIN_WAIT * 2;
         loop {
-            match inner.client.get_block_with_config(slot, BLOCK_CONFIG).map(Some) {
+            match inner
+                .client
+                .get_block_with_config(slot, BLOCK_CONFIG)
+                .map(Some)
+            {
                 Ok(b) => break Ok(b),
                 Err(ClientError {
                     kind: ClientErrorKind::Reqwest(e),

@@ -20,7 +20,10 @@ use super::db::DbOperation;
 pub fn spawn_block_handler(
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
-) -> (SyncSender<(u64, UiConfirmedBlock)>, std::thread::JoinHandle<eyre::Result<()>>) {
+) -> (
+    SyncSender<(u64, UiConfirmedBlock)>,
+    std::thread::JoinHandle<eyre::Result<()>>,
+) {
     let (tx, rx) = std::sync::mpsc::sync_channel(128);
     let handle = std::thread::Builder::new()
         .name("block handler".to_owned())
