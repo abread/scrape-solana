@@ -23,3 +23,6 @@ tempdir = "0.3.7"
 thiserror = "1.0.63"
 vector-trees = { path = "../vector-trees", features = ["std", "serde"] }
 zstd = "0.13.2"
+
+[dev-dependencies]
+rand_xorshift = { version = "0.3.0" }

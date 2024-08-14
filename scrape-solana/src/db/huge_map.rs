@@ -225,3 +225,112 @@ pub struct StoredMapMeta {
     free_head: Option<NonMaxU64>,
     len: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    // Near copy of vector-tree's tests.
+
+    use crate::huge_vec::ZstdTransformer;
+    use super::{HugeMap, MapFsStore};
+    use tempdir::TempDir;
+
+
+    use rand::{seq::SliceRandom, Rng, SeedableRng};
+    use rand_xorshift::XorShiftRng;
+    use std::collections::BTreeSet;
+
+    fn open_map(tempdir: &TempDir) -> HugeMap<usize, (), MapFsStore<ZstdTransformer>, 2> {
+        let store = MapFsStore::new(tempdir.path(), ZstdTransformer::default());
+        HugeMap::open(store).unwrap()
+    }
+
+    #[test]
+    fn test_random_add() {
+        for _ in 0..200 {
+            let tempdir = TempDir::new("test_random_add").unwrap();
+            let seed = rand::thread_rng().gen_range(0..u64::MAX);
+            println!("Seed: {:x}", seed);
+
+            let mut rng: XorShiftRng = SeedableRng::seed_from_u64(seed);
+
+            let entries: BTreeSet<_> = (0..1000).map(|_| rng.gen_range(0..50000usize)).collect();
+            let entries_s: BTreeSet<_> = (0..1000).map(|_| rng.gen_range(0..50000usize)).collect();
+
+            {
+                let mut tree = open_map(&tempdir);
+
+                for i in entries.iter() {
+                    tree.insert(*i, ());
+                }
+
+                for i in entries_s.iter() {
+                    assert_eq!(entries.contains(i), tree.contains_key(i));
+                }
+                assert_eq!(tree.len(), entries_s.len() as u64);
+            }
+            {
+                let mut tree = open_map(&tempdir);
+
+                for i in entries_s.iter() {
+                    assert_eq!(entries.contains(i), tree.contains_key(i));
+                }
+                assert_eq!(tree.len(), entries_s.len() as u64);
+
+                tree.clear();
+            }
+            {
+                let tree = open_map(&tempdir);
+                assert_eq!(tree.len(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_random_remove() {
+        for _ in 0..500 {
+            let tempdir = TempDir::new("test_random_add").unwrap();
+            let seed = rand::thread_rng().gen_range(0..u64::MAX);
+            println!("Seed: {:x}", seed);
+
+            let mut rng: XorShiftRng = SeedableRng::seed_from_u64(seed);
+
+            let entries: Vec<_> = (0..1000).map(|_| rng.gen_range(0..50000usize)).collect();
+
+            let mut set = BTreeSet::new();
+
+            {
+                let mut tree = open_map(&tempdir);
+
+                for i in entries.iter() {
+                    set.insert(*i);
+                    tree.insert(*i, ());
+                }
+
+                let mut entries_r: Vec<_> = set.iter().copied().collect();
+                entries_r.shuffle(&mut rng);
+
+                for i in entries_r.iter().take(200) {
+                    let ret_set = set.remove(i);
+                    let ret_tree = tree.remove(i);
+
+                    assert!(
+                        ret_tree.is_some() || !ret_set,
+                        "{:?} {:?} {:?}",
+                        ret_tree,
+                        i,
+                        tree.contains_key(i)
+                    );
+                }
+
+                assert_eq!(tree.len(), set.len() as u64);
+            }
+            {
+                let tree = open_map(&tempdir);
+                assert_eq!(tree.len(), set.len() as u64);
+                for k in set.iter() {
+                    assert!(tree.contains_key(k));
+                }
+            }
+        }
+    }
+}
