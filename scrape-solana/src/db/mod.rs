@@ -232,11 +232,11 @@ impl Db {
 
     fn is_account_index_healthy(&self, n_samples: u64, issues: &mut Vec<String>) -> bool {
         // HACK: only checks a few elements
-        if self.account_index.len() != self.account_records.len() {
+        if self.account_index.len() != self.account_records.len().saturating_sub(1) {
             issues.push(format!(
-                "account index and record sizes do not match: {} != {}",
+                "account index and record sizes do not match: {} != {} (+ endcap)",
                 self.account_index.len(),
-                self.account_records.len()
+                self.account_records.len().saturating_sub(1)
             ));
             return false;
         }
@@ -434,8 +434,8 @@ impl Db {
     pub fn slot_limits(&self) -> eyre::Result<DbSlotLimits> {
         Ok(DbSlotLimits {
             middle_slot: self.middle_slot,
-            left_slot: self.left.block_records.last()?.map(|r| r.slot),
-            right_slot: self.right.block_records.last()?.map(|r| r.slot),
+            left_slot: self.left.block_records.second_last()?.map(|r| r.slot),
+            right_slot: self.right.block_records.second_last()?.map(|r| r.slot),
         })
     }
 

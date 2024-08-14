@@ -163,6 +163,14 @@ where
         }
     }
 
+    pub fn second_last(&self) -> Result<Option<ItemRef<'_, T, T, CHUNK_SZ>>, HugeVecError<Store::Error>> {
+        if self.len < 2 {
+            Ok(None)
+        } else {
+            self.get(self.len - 2).map(Some)
+        }
+    }
+
     pub fn last_mut(
         &mut self,
     ) -> Result<Option<ItemRefMut<'_, T, T, CHUNK_SZ>>, HugeVecError<Store::Error>> {
