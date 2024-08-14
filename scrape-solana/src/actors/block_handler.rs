@@ -98,6 +98,11 @@ fn filtered_account_ids_handler_actor(
     db_tx: SyncSender<DbOperation>,
 ) -> eyre::Result<()> {
     println!("block handler[filtered account_ids handler] ready");
+
+    // between filtering and storing some account ids can get duplicated
+    // so we need a last dedupe step
+    let mut last_account_ids = BTreeSet::new();
+
     loop {
         // collect all pending account ids
         let Ok(mut account_ids) = rx.recv() else {
@@ -106,16 +111,18 @@ fn filtered_account_ids_handler_actor(
         while let Ok(mut more_account_ids) = rx.try_recv() {
             account_ids.append(&mut more_account_ids);
         }
+        account_ids.retain(|el| !last_account_ids.contains(el));
         if account_ids.is_empty() {
             continue; // wait for more
         }
 
-        dbg!(&account_ids);
-        let accounts = api.fetch_accounts(account_ids)?;
+        let accounts = api.fetch_accounts(account_ids.clone())?;
         if db_tx.send(DbOperation::StoreNewAccounts(accounts)).is_err() {
             println!("block handler[filtered account_ids handler]: db closed. terminating");
             break;
         }
+
+        last_account_ids = account_ids;
     }
 
     Ok(())
