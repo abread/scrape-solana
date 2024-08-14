@@ -27,7 +27,7 @@ pub fn spawn_db_actor(
     root_path: PathBuf,
     default_middle_slot_getter: impl FnOnce() -> u64 + Send + 'static,
 ) -> (SyncSender<DbOperation>, JoinHandle<eyre::Result<()>>) {
-    let (tx, rx) = sync_channel(256);
+    let (tx, rx) = sync_channel(4096);
     let handle = std::thread::Builder::new()
         .name("db".to_owned())
         .spawn(move || {
