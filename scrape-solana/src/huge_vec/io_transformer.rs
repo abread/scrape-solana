@@ -166,7 +166,7 @@ mod test {
         {
             io_transformer
                 .wrap_write(&mut pipe, |w| {
-                    w.write_all(dbg!(&data))?;
+                    w.write_all(&data)?;
                     w.flush()?;
                     Ok::<_, io::Error>(())
                 })
