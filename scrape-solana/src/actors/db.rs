@@ -28,16 +28,20 @@ pub fn spawn_db_actor(
     default_middle_slot_getter: impl FnOnce() -> u64 + Send + 'static,
 ) -> (SyncSender<DbOperation>, JoinHandle<eyre::Result<()>>) {
     let (tx, rx) = sync_channel(256);
-    let handle = std::thread::spawn(move || {
-        let db = Db::open(root_path, default_middle_slot_getter, std::io::stdout())?;
-        actor(db, rx)
-    });
+    let handle = std::thread::Builder::new()
+        .name("db".to_owned())
+        .spawn(move || {
+            let db = Db::open(root_path, default_middle_slot_getter, std::io::stdout())?;
+            actor(db, rx)
+        })
+        .expect("failed to spawn db thread");
     (tx, handle)
 }
 
 fn actor(mut db: Db, rx: Receiver<DbOperation>) -> eyre::Result<()> {
     use DbOperation::*;
 
+    println!("db ready");
     for op in rx {
         match op {
             StoreBlock(block) => {

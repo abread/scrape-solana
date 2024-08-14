@@ -27,9 +27,18 @@ pub fn spawn_block_fetcher(
     JoinHandle<eyre::Result<()>>,
 ) {
     let (tx, rx) = sync_channel(1);
-    let handle = std::thread::spawn(move || {
-        block_fetcher_actor(forward_chance, step, rx, api, block_handler_tx, db_tx)
-    });
+    let handle = std::thread::Builder::new()
+        .name("block_fetcher".to_owned())
+        .spawn(move || {
+            match block_fetcher_actor(forward_chance, step, rx, api, block_handler_tx, db_tx) {
+                Ok(x) => Ok(x),
+                Err(e) => {
+                    eprintln!("block fetcher actor failed: {e}");
+                    Err(e)
+                }
+            }
+        })
+        .expect("failed to spawn block fetcher actor thread");
     (tx, handle)
 }
 

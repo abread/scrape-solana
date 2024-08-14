@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eyre::eyre;
+use eyre::{eyre, WrapErr};
 
 use crate::{
     model::{AccountID, Block},
@@ -21,7 +21,10 @@ pub fn spawn_block_handler(
     db_tx: SyncSender<DbOperation>,
 ) -> (SyncSender<Block>, std::thread::JoinHandle<eyre::Result<()>>) {
     let (tx, rx) = std::sync::mpsc::sync_channel(128);
-    let handle = std::thread::spawn(move || block_handler_actor(rx, api, db_tx));
+    let handle = std::thread::Builder::new()
+        .name("block handler".to_owned())
+        .spawn(move || block_handler_actor(rx, api, db_tx))
+        .expect("failed to spawn block handler thread");
     (tx, handle)
 }
 
@@ -33,11 +36,15 @@ fn block_handler_actor(
     let (new_acc_tx, new_acc_rx) = std::sync::mpsc::sync_channel(256);
     let filtered_handler_handle = {
         let db_tx = db_tx.clone();
-        std::thread::spawn(move || filtered_account_ids_handler_actor(new_acc_rx, api, db_tx))
+        std::thread::Builder::new()
+            .name("filtered account_ids handler".to_owned())
+            .spawn(move || filtered_account_ids_handler_actor(new_acc_rx, api, db_tx))
+            .wrap_err("failed to spawn filtered account ids handler thread")?
     };
 
     let mut last_sync = Instant::now();
 
+    println!("block handler ready");
     while let Ok(block) = rx.recv() {
         let account_ids = block
             .txs
@@ -68,6 +75,7 @@ fn block_handler_actor(
         }
     }
 
+    std::mem::drop(new_acc_tx); // allow filtered account_ids handler to exit
     filtered_handler_handle
         .join()
         .expect("filtered new account handler panicked")?;
@@ -80,6 +88,7 @@ fn filtered_account_ids_handler_actor(
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
 ) -> eyre::Result<()> {
+    println!("block handler[filtered account_ids handler] ready");
     loop {
         // collect all pending account ids
         let Ok(mut account_ids) = rx.recv() else {
