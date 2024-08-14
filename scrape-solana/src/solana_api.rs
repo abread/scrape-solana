@@ -1,4 +1,3 @@
-use eyre::{eyre, WrapErr};
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
@@ -9,13 +8,15 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_transaction_status::UiConfirmedBlock;
 use std::{
     collections::BTreeSet,
-    sync::Mutex,
+    fmt::Debug,
+    sync::{Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
-use crate::model::{Account, AccountID, Block};
+use crate::model::{Account, AccountID};
 
 const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
+const BLOCK_TIME: Duration = Duration::from_millis(1000 / 2); // ~2 blocks/s
 const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
     encoding: None,
     transaction_details: None,
@@ -78,81 +79,97 @@ impl SolanaApi {
         account_ids: &[solana_sdk::pubkey::Pubkey],
     ) -> eyre::Result<(u64, u64, Vec<Option<solana_sdk::account::Account>>)> {
         let mut inner = self.0.lock().unwrap();
-        let now = Instant::now();
-        let elapsed = now - inner.last_access;
-        if elapsed < MIN_WAIT {
-            std::thread::sleep(MIN_WAIT - elapsed);
-        }
 
-        let min_height = inner.client.get_block_height()?;
-        std::thread::sleep(MIN_WAIT);
-        let accounts = inner.client.get_multiple_accounts(account_ids)?;
-        std::thread::sleep(MIN_WAIT);
-        inner.last_access = Instant::now();
-        let max_height = inner.client.get_block_height()?;
+        let min_height = Self::do_req(&mut inner, |c| c.get_block_height())?;
+        let accounts = Self::do_req(&mut inner, |c| c.get_multiple_accounts(account_ids))?;
+        let max_height = Self::do_req(&mut inner, |c| c.get_block_height())?;
 
         Ok((min_height, max_height, accounts))
     }
 
     pub fn fetch_block(&self, slot: u64) -> eyre::Result<Option<UiConfirmedBlock>> {
         let mut inner = self.0.lock().unwrap();
+        match Self::do_req(&mut inner, |c| {
+            c.get_block_with_config(slot, BLOCK_CONFIG).map(Some)
+        }) {
+            Ok(b) => Ok(b),
+            Err(ClientError {
+                kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32009, .. }),
+                ..
+            }) => {
+                eprintln!(
+                    "skipped block slot={slot}: not present in Solana nodes nor long-term storage"
+                );
+                Ok(None)
+            }
+            Err(ClientError {
+                kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32007, .. }),
+                ..
+            }) => {
+                eprintln!("skipped block slot={slot}: skipped, or missing due to ledger jump to recent snapshot");
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
 
+    fn do_req<R: Debug>(
+        inner: &mut MutexGuard<SolanaApiInner>,
+        mut f: impl FnMut(&mut RpcClient) -> solana_client::client_error::Result<R>,
+    ) -> solana_client::client_error::Result<R> {
         let now = Instant::now();
         let elapsed = now - inner.last_access;
         if elapsed < MIN_WAIT {
             std::thread::sleep(MIN_WAIT - elapsed);
         }
+
         inner.last_access = Instant::now();
 
         let mut larger_timeout = MIN_WAIT * 2;
         loop {
-            match inner
-                .client
-                .get_block_with_config(slot, BLOCK_CONFIG)
-                .map(Some)
-            {
-                Ok(b) => break Ok(b),
+            let res = f(&mut inner.client);
+            match res {
+                Ok(r) => break Ok(r),
                 Err(ClientError {
-                    kind: ClientErrorKind::Reqwest(e),
+                    kind: ClientErrorKind::Reqwest(ref e),
                     ..
                 }) if e.is_timeout() => {
-                    eprintln!("block slot=#{slot} fetch timeout, retrying in {larger_timeout:#?}");
+                    eprintln!("request timeout (reqwest: {e}), retrying in {larger_timeout:#?}");
                     if larger_timeout > MAX_TIMEOUT {
-                        break Err(eyre!("block slot=#{slot} fetch timeout, aborting fetch"));
+                        break res;
                     }
                     std::thread::sleep(larger_timeout);
                     larger_timeout *= 2;
                     continue;
                 }
                 Err(ClientError {
-                    kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code, .. }),
+                    kind: ClientErrorKind::RpcError(ref e @ RpcError::RpcResponseError { code, .. }),
                     ..
                 }) if code == -32004 || code == -32014 || code == -32016 => {
-                    eprintln!("block slot=#{slot} fetch timeout, retrying in {larger_timeout:#?}");
+                    larger_timeout = larger_timeout.max(BLOCK_TIME / 2);
+
+                    eprintln!("request timeout (rpc: {e}), retrying in {larger_timeout:#?}");
                     if larger_timeout > MAX_TIMEOUT {
-                        break Err(eyre!("block slot=#{slot} fetch timeout, aborting fetch"));
+                        break res;
                     }
                     std::thread::sleep(larger_timeout);
                     larger_timeout *= 2;
                     continue;
                 }
                 Err(ClientError {
-                    kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32009, .. }),
+                    kind: ClientErrorKind::Io(ref e),
                     ..
                 }) => {
-                    eprintln!("skipped block slot={slot}: not present in Solana nodes nor long-term storage");
-                    return Ok(None);
+                    eprintln!("request fail (io: {e}), retrying in {larger_timeout:#?}");
+                    if larger_timeout > MAX_TIMEOUT {
+                        break res;
+                    }
+                    std::thread::sleep(larger_timeout);
+                    larger_timeout *= 2;
+                    continue;
                 }
-                Err(ClientError {
-                    kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32007, .. }),
-                    ..
-                }) => {
-                    eprintln!("skipped block slot={slot}: skipped, or missing due to ledger jump to recent snapshot");
-                    return Ok(None);
-                }
-                r @ Err(_) => {
-                    let r = r.wrap_err(format!("failed to fetch next block slot={slot}"));
-                    break r;
+                Err(_) => {
+                    break res;
                 }
             }
         }
