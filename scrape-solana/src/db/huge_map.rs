@@ -16,7 +16,7 @@ use crate::huge_vec::{self, Chunk, FsStore, FsStoreError, HugeVec, IOTransformer
 
 type HugeMapInner<K, V, MStore, const SZ: usize> =
     BVecTreeMap<HugeVec<BVecTreeNode<K, V>, <MStore as MapStore<K, V, SZ>>::VecStore, SZ>, K, V>;
-pub struct HugeMap<K: Debug, V: Debug, MStore: MapStore<K, V, SZ>, const SZ: usize = 4096> {
+pub struct HugeMap<K: Debug, V: Debug, MStore: MapStore<K, V, SZ>, const SZ: usize = 1> {
     map: HugeMapInner<K, V, MStore, SZ>,
     meta_store: MStore::MapMetaStore,
 }
@@ -240,7 +240,7 @@ mod tests {
     use rand_xorshift::XorShiftRng;
     use std::collections::BTreeSet;
 
-    fn open_map(tempdir: &TempDir) -> HugeMap<usize, (), MapFsStore<ZstdTransformer>, 2> {
+    fn open_map(tempdir: &TempDir) -> HugeMap<usize, (), MapFsStore<ZstdTransformer>, 1> {
         let store = MapFsStore::new(tempdir.path(), ZstdTransformer::default());
         HugeMap::open(store).unwrap()
     }

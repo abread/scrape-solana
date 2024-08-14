@@ -14,8 +14,8 @@ use std::{
 mod model;
 use model::AccountRecord;
 
-mod huge_map;
-use huge_map::MapFsStore;
+//mod huge_map;
+//use huge_map::MapFsStore;
 
 mod monotonous_block_db;
 use monotonous_block_db::MonotonousBlockDb;
@@ -27,8 +27,8 @@ pub(crate) type HugeVec<T, const CHUNK_SZ: usize> = crate::huge_vec::HugeVec<
     FsStore<crate::huge_vec::Chunk<T, CHUNK_SZ>, ZstdTransformer>,
     CHUNK_SZ,
 >;
-pub(crate) type HugeMap<K, V, const CHUNK_SZ: usize> =
-    huge_map::HugeMap<K, V, MapFsStore<ZstdTransformer>, CHUNK_SZ>;
+/*pub(crate) type HugeMap<K, V, const CHUNK_SZ: usize> =
+    huge_map::HugeMap<K, V, MapFsStore<ZstdTransformer>, CHUNK_SZ>;*/
 
 pub(crate) const fn chunk_sz<T>(target_mem_usage_bytes: usize) -> usize {
     let target_chunk_sz_bytes =
@@ -47,14 +47,14 @@ pub struct Db {
     // blocks ahead of middle_slot
     right: MonotonousBlockDb,
 
-    account_records: HugeVec<AccountRecord, { chunk_sz::<AccountRecord>(32 * MB) }>,
+    account_records: HugeVec<AccountRecord, { chunk_sz::<AccountRecord>(128 * MB) }>,
     account_data: HugeVec<u8, { chunk_sz::<u8>(256 * MB) }>,
-    account_index: HugeMap<
+    /*account_index: HugeMap<
         AccountID,
         u64,
         //{ chunk_sz::<vector_trees::btree::BVecTreeNode<AccountID, u64>>(256 * MB) },
         1, // limitation in current slicing implementation
-    >,
+    >,*/
 }
 
 pub struct DbSlotLimits {
@@ -166,9 +166,9 @@ impl Db {
         open_vec_table!(account_records);
 
         // build account records map from underlying vec
-        let store = MapFsStore::new(root_path.join("account_index"), ZstdTransformer::default());
+        /*let store = MapFsStore::new(root_path.join("account_index"), ZstdTransformer::default());
         let account_index =
-            HugeMap::open(store).wrap_err("Failed to create table: account_index")?;
+            HugeMap::open(store).wrap_err("Failed to create table: account_index")?;*/
 
         // create left and right monotonous dbs
         let left = MonotonousBlockDb {
@@ -195,7 +195,7 @@ impl Db {
             right,
             account_records,
             account_data,
-            account_index,
+            //account_index,
         };
 
         Ok(db)
@@ -207,12 +207,12 @@ impl Db {
         let r1 = self.left.heal(n_samples, &mut issues);
         let r2 = self.right.heal(n_samples, &mut issues);
         let r3 = self.heal_accounts(n_samples, &mut issues);
-        let r4 = self.heal_account_index(n_samples, &mut issues);
+        let r4 = Ok(()); //let r4 = self.heal_account_index(n_samples, &mut issues);
 
         (issues, self.sync().and(r1).and(r2).and(r3).and(r4))
     }
 
-    fn heal_account_index(&mut self, n_samples: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
+    /*fn heal_account_index(&mut self, n_samples: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
         if !self.is_account_index_healthy(n_samples, issues) {
             issues.push("rebuilding account index".to_owned());
 
@@ -252,7 +252,7 @@ impl Db {
         }
 
         true
-    }
+    }*/
 
     fn heal_accounts(&mut self, n_samples: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
         if self.account_records.is_empty() {
@@ -389,7 +389,9 @@ impl Db {
     }
 
     pub fn has_account(&self, id: &AccountID) -> bool {
-        self.account_index.contains_key(id)
+        self.account_records
+            .iter()
+            .any(|r| r.id == *id && !r.is_endcap())
     }
 
     pub fn store_new_account(&mut self, account: Account) -> eyre::Result<()> {
@@ -419,14 +421,14 @@ impl Db {
             let _ = std::mem::replace(&mut *old_endcap, account_rec);
         }
 
-        if self
+        /*if self
             .account_index
             .insert(account.id.clone(), self.account_records.len() - 1)
             .is_some()
         {
             self.sync()?;
             unreachable!("non-present account became present");
-        }
+        }*/
 
         Ok(())
     }
@@ -453,7 +455,7 @@ impl Db {
 
         sync_table!(account_data);
         sync_table!(account_records);
-        sync_table!(account_index);
+        //sync_table!(account_index);
         Ok(())
     }
 }
