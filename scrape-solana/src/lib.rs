@@ -1,7 +1,7 @@
 pub mod actors;
 mod crc_checksum_serde;
 mod db;
-mod huge_vec;
+pub mod huge_vec;
 mod model;
 pub mod solana_api;
 

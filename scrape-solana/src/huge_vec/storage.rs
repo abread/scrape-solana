@@ -16,6 +16,9 @@ pub trait IndexedStorage<T> {
     fn store(&mut self, idx: usize, object: impl Borrow<T>) -> Result<(), Self::Error>;
     fn truncate(&mut self, len: usize) -> Result<(), Self::Error>;
     fn len(&self) -> Result<usize, Self::Error>;
+    fn is_empty(&self) -> Result<bool, Self::Error> {
+        self.len().map(|len| len == 0)
+    }
     fn clear(&mut self) -> Result<(), Self::Error> {
         self.truncate(0)
     }

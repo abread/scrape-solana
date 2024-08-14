@@ -51,6 +51,10 @@ impl<T, const SZ: usize> Chunk<T, SZ> {
         self.storage.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub const fn capacity(&self) -> usize {
         SZ
     }

@@ -603,13 +603,15 @@ mod chunk_cache {
         ops::{Deref, DerefMut},
     };
 
+    type CacheEntry<T, const CHUNK_SZ: usize> = (Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>, u64);
+
     pub(crate) struct ChunkCache<T, Store, const CHUNK_SZ: usize>
     where
         T: Debug,
         Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
     {
         chunk_store: Store,
-        cached_chunks: BTreeMap<usize, (Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>, u64)>,
+        cached_chunks: BTreeMap<usize, CacheEntry<T, CHUNK_SZ>>,
         chunk_count: usize,
         clock: u64,
     }
@@ -679,6 +681,7 @@ mod chunk_cache {
             self.chunk_count
         }
 
+        #[cfg(test)]
         pub(crate) fn dirty_chunk_count(&self) -> usize {
             self.cached_chunks
                 .values()
@@ -788,10 +791,6 @@ mod chunk_cache {
                 chunk,
                 is_dirty: false,
             }
-        }
-
-        pub fn into_inner(self) -> Chunk<T, SZ> {
-            self.chunk
         }
 
         pub fn is_dirty(&self) -> bool {

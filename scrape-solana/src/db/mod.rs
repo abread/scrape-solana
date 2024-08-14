@@ -106,7 +106,7 @@ impl Db {
         // insert end cap
         db.account_records.push(AccountRecord::endcap(0))?;
 
-        if cfg!(debug) {
+        if cfg!(debug_assertions) {
             let (issues, res) = db.heal(u64::MAX);
             assert!(issues.is_empty());
             res.unwrap();

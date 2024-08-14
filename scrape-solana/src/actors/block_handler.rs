@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eyre::{eyre, WrapErr};
+use eyre::WrapErr;
 use solana_transaction_status::UiConfirmedBlock;
 
 use crate::{
