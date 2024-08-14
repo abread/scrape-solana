@@ -7,8 +7,9 @@ use std::{
 };
 
 use eyre::eyre;
+use solana_transaction_status::UiConfirmedBlock;
 
-use crate::{db::DbSlotLimits, model::Block, solana_api::SolanaApi};
+use crate::{db::DbSlotLimits, solana_api::SolanaApi};
 
 use super::db::DbOperation;
 
@@ -20,7 +21,7 @@ pub fn spawn_block_fetcher(
     forward_chance: f64,
     step: u64,
     api: Arc<SolanaApi>,
-    block_handler_tx: SyncSender<Block>,
+    block_handler_tx: SyncSender<(u64, UiConfirmedBlock)>,
     db_tx: SyncSender<DbOperation>,
 ) -> (
     SyncSender<BlockFetcherOperation>,
@@ -47,7 +48,7 @@ fn block_fetcher_actor(
     step: u64,
     rx: Receiver<BlockFetcherOperation>,
     api: Arc<SolanaApi>,
-    block_handler_tx: SyncSender<Block>,
+    block_handler_tx: SyncSender<(u64, UiConfirmedBlock)>,
     db_tx: SyncSender<DbOperation>,
 ) -> eyre::Result<()> {
     let limits = read_limits(&db_tx)?;
@@ -73,7 +74,7 @@ fn block_fetcher_actor(
         };
 
         let block = api.fetch_block(*slot)?;
-        if block_handler_tx.send(block).is_err() {
+        if block_handler_tx.send((*slot, block)).is_err() {
             println!("block fetcher: block handler closed. terminating");
             break;
         }

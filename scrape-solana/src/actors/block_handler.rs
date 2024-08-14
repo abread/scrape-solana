@@ -8,6 +8,7 @@ use std::{
 };
 
 use eyre::{eyre, WrapErr};
+use solana_transaction_status::UiConfirmedBlock;
 
 use crate::{
     model::{AccountID, Block},
@@ -19,7 +20,7 @@ use super::db::DbOperation;
 pub fn spawn_block_handler(
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
-) -> (SyncSender<Block>, std::thread::JoinHandle<eyre::Result<()>>) {
+) -> (SyncSender<(u64, UiConfirmedBlock)>, std::thread::JoinHandle<eyre::Result<()>>) {
     let (tx, rx) = std::sync::mpsc::sync_channel(128);
     let handle = std::thread::Builder::new()
         .name("block handler".to_owned())
@@ -29,7 +30,7 @@ pub fn spawn_block_handler(
 }
 
 fn block_handler_actor(
-    rx: Receiver<Block>,
+    rx: Receiver<(u64, UiConfirmedBlock)>,
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
 ) -> eyre::Result<()> {
@@ -45,7 +46,9 @@ fn block_handler_actor(
     let mut last_sync = Instant::now();
 
     println!("block handler ready");
-    while let Ok(block) = rx.recv() {
+    while let Ok((slot, block)) = rx.recv() {
+        let block = Block::from_solana_sdk(slot, block)?;
+
         let account_ids = block
             .txs
             .iter()
