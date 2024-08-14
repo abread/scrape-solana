@@ -72,7 +72,7 @@ impl MonotonousBlockDb {
     }
 
     fn push_impl(&mut self, block: &Block) -> eyre::Result<()> {
-        let txs_start_idx = self.txs.len().saturating_sub(1);
+        let txs_start_idx = self.txs.len();
 
         for tx in &block.txs {
             self.txs.push(tx.clone())?;
