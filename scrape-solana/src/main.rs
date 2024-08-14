@@ -22,7 +22,7 @@ struct App {
     shard_config: ShardConfig,
 
     /// Chance of trying to fetch a block ahead of the middle slot.
-    #[arg(short, long, default_value = "0.5")]
+    #[arg(short, long, default_value = "0.01")]
     forward_fetch_chance: f64,
 }
 
@@ -47,12 +47,15 @@ fn main() -> Result<()> {
         let args = args.clone();
         let endpoint_url = endpoint_url.to_owned();
         move || {
+            println!("fetching latest block slot");
             let client =
                 RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
             let slot = client
                 .get_epoch_info()
                 .expect("failed to get latest block slot")
                 .absolute_slot;
+
+            let slot = slot - 100; // avoid fetching the latest block, start a bit behind
 
             let slot_shard = slot % args.shard_config.n;
             let slot = if slot_shard != args.shard_config.id {
