@@ -1,3 +1,4 @@
+use rand::Rng;
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
@@ -117,16 +118,14 @@ impl SolanaApi {
         inner: &mut MutexGuard<SolanaApiInner>,
         mut f: impl FnMut(&mut RpcClient) -> solana_client::client_error::Result<R>,
     ) -> solana_client::client_error::Result<R> {
-        let now = Instant::now();
-        let elapsed = now - inner.last_access;
+        let elapsed = inner.last_access.elapsed()
+            + Duration::from_millis(rand::thread_rng().gen_range(0..100));
         if elapsed < MIN_WAIT {
             std::thread::sleep(MIN_WAIT - elapsed);
         }
 
-        inner.last_access = Instant::now();
-
         let mut larger_timeout = MIN_WAIT * 2;
-        loop {
+        let res = loop {
             let res = f(&mut inner.client);
             match res {
                 Ok(r) => break Ok(r),
@@ -183,6 +182,10 @@ impl SolanaApi {
                     break res;
                 }
             }
-        }
+        };
+
+        inner.last_access = Instant::now();
+
+        res
     }
 }
