@@ -157,6 +157,17 @@ impl SolanaApi {
                     continue;
                 }
                 Err(ClientError {
+                    kind:
+                        ClientErrorKind::RpcError(
+                            ref e @ RpcError::RpcResponseError { code: -32602, .. },
+                        ),
+                    ..
+                }) => {
+                    eprintln!("request timeout (rpc: {e}), retrying in 1min");
+                    std::thread::sleep(Duration::from_secs(60));
+                    continue;
+                }
+                Err(ClientError {
                     kind: ClientErrorKind::Io(ref e),
                     ..
                 }) => {
