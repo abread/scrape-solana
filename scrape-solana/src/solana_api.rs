@@ -31,6 +31,8 @@ struct SolanaApiInner {
 
 pub struct SolanaApi(Mutex<SolanaApiInner>);
 
+const MAX_TIMEOUT: Duration = Duration::from_secs(128);
+
 impl SolanaApi {
     pub fn new(endpoint_url: String) -> Self {
         let client = RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
@@ -111,6 +113,21 @@ impl SolanaApi {
                     ..
                 }) if e.is_timeout() => {
                     eprintln!("block slot=#{slot} fetch timeout, retrying in {larger_timeout:#?}");
+                    if larger_timeout > MAX_TIMEOUT {
+                        break Err(eyre!("block slot=#{slot} fetch timeout, aborting fetch"));
+                    }
+                    std::thread::sleep(larger_timeout);
+                    larger_timeout *= 2;
+                    continue;
+                }
+                Err(ClientError {
+                    kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code, .. }),
+                    ..
+                }) if code == -32004 || code == -32014 || code == -32016 => {
+                    eprintln!("block slot=#{slot} fetch timeout, retrying in {larger_timeout:#?}");
+                    if larger_timeout > MAX_TIMEOUT {
+                        break Err(eyre!("block slot=#{slot} fetch timeout, aborting fetch"));
+                    }
                     std::thread::sleep(larger_timeout);
                     larger_timeout *= 2;
                     continue;
