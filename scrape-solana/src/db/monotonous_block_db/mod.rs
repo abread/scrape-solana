@@ -176,39 +176,40 @@ impl MonotonousBlockDb {
     }
 
     fn get_block(&self, idx: u64) -> eyre::Result<Block> {
-        let block_record = self
+        let record = self
             .block_records
             .get(idx)
             .wrap_err("could not read block record")?;
 
-        if block_record.is_endcap() {
+        if record.is_endcap() {
             return Err(eyre!("cannot get endcap"));
         }
 
-        let tx_idx_range = {
-            let next_block = self
-                .block_records
-                .get(idx + 1)
-                .wrap_err("could not read next block record")?;
-            let start = block_record.txs_start_idx;
-            let end = next_block.txs_start_idx;
-            start..end
-        };
+        let block_txs_count = self
+            .block_records
+            .get(idx + 1)
+            .wrap_err("failed to get account data size (from next record)")?
+            .txs_start_idx
+            - record.txs_start_idx;
 
-        let txs: Vec<Tx> = tx_idx_range
-            .map(|idx| self.txs.get(idx).map(|tx_ref| tx_ref.to_owned()))
-            .collect::<eyre::Result<_, _>>()?;
+        let txs = {
+            let mut txs = Vec::with_capacity(block_txs_count as usize);
+
+            for tx_idx in record.txs_start_idx..(record.txs_start_idx + block_txs_count) {
+                let tx = self.txs.get(tx_idx)?.clone();
+                txs.push(tx);
+            }
+
+            txs
+        };
 
         let block = Block {
-            slot: block_record.slot,
-            height: block_record.height,
-            ts: block_record.ts,
+            slot: record.slot,
+            height: record.height,
+            ts: record.ts,
             txs,
         };
-
-        if checksum(&block) != block_record.checksum {
-            return Err(eyre!("checksum mismatch"));
-        }
+        eyre::ensure!(checksum(&block) == record.checksum, "checksum mismatch");
 
         Ok(block)
     }

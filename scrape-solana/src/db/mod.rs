@@ -344,6 +344,8 @@ impl Db {
             .get(idx)
             .wrap_err("failed to get account record")?;
 
+        eyre::ensure!(!record.is_endcap(), "cannot get endcap record");
+
         let account_data_len = self
             .account_records
             .get(idx + 1)

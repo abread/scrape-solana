@@ -26,8 +26,9 @@ pub(crate) fn select_random_elements<'r, T: 'r, C: Collection<T>>(
         .chain(
             collection
                 .iter()
-                .take(n_samples as usize)
                 .map(move |_| rng.gen_range(0..(collection.len())))
+                .filter(|&idx| idx < N_ELEMENTS_ENDS && idx > collection.len() - N_ELEMENTS_ENDS)
+                .take(n_samples as usize)
                 .map(|idx| (idx, collection.get(idx).unwrap())),
         )
 }
