@@ -377,7 +377,7 @@ impl Db {
     }
 
     pub fn push_block(&mut self, block: Block) -> eyre::Result<()> {
-        let side = if block.height > self.middle_slot {
+        let side = if block.slot > self.middle_slot {
             &mut self.right
         } else {
             &mut self.left
