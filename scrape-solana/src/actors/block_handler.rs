@@ -111,6 +111,8 @@ fn filtered_account_ids_handler_actor(
         let Ok(mut account_ids) = rx.recv() else {
             break;
         };
+        std::thread::sleep(Duration::from_secs(1)); // sleep a bit to allow account ids to
+                                                    // accumulate
         while let Ok(mut more_account_ids) = rx.try_recv() {
             account_ids.append(&mut more_account_ids);
         }
