@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::fmt::Debug;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Seek, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -140,9 +140,11 @@ impl<IOT: IOTransformer> MapFsStore<IOT> {
 #[derive(thiserror::Error, Debug)]
 pub enum MapFsStoreError<IOTErr> {
     #[error("error in map metadata store")]
-    MetaStoreError(#[from] bincode::Error),
+    MetaStore(#[from] bincode::Error),
     #[error("error in map data store")]
-    DataStoreError(#[from] FsStoreError<IOTErr>),
+    DataStore(#[from] FsStoreError<IOTErr>),
+    #[error("io error")]
+    Io(#[from] io::Error),
 }
 
 impl<IOT: IOTransformer, K, V, const CHUNK_SZ: usize> MapStore<K, V, CHUNK_SZ> for MapFsStore<IOT>
@@ -157,6 +159,7 @@ where
     type Error = MapFsStoreError<IOT::Error>;
 
     fn open(self) -> Result<(Self::MapMetaStore, Self::VecStore), Self::Error> {
+        fs::create_dir_all(&self.0)?;
         let map_meta_store = MapMetaFsStore::open(self.0.join("map_meta"))?;
         let vec_store = FsStore::open(self.0.join("map_data"), self.1)?;
         Ok((map_meta_store, vec_store))
@@ -172,14 +175,13 @@ pub trait MapMetaStore {
 
 pub struct MapMetaFsStore(RefCell<File>);
 impl MapMetaFsStore {
-    fn open(path: impl AsRef<Path>) -> Result<Self, bincode::Error> {
+    fn open(path: impl AsRef<Path>) -> Result<Self, io::Error> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(path)
-            .map_err(|e| Box::new(bincode::ErrorKind::Io(e)))?;
+            .open(path)?;
         Ok(Self(RefCell::new(file)))
     }
 }
