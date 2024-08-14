@@ -52,10 +52,14 @@ fn block_fetcher_actor(
 ) -> eyre::Result<()> {
     let limits = read_limits(&db_tx)?;
 
-    let mut left_slot = limits.left_slot.unwrap_or(limits.middle_slot);
+    let mut left_slot = limits
+        .left_slot
+        .map(|s| s.saturating_sub(step))
+        .unwrap_or(limits.middle_slot);
     let mut right_slot = limits
         .right_slot
-        .unwrap_or(limits.middle_slot.saturating_add(limits.middle_slot));
+        .map(|s| s + step)
+        .unwrap_or(limits.middle_slot + step);
 
     loop {
         if let Ok(BlockFetcherOperation::Stop) = rx.try_recv() {
