@@ -73,13 +73,15 @@ fn block_fetcher_actor(
             (left_slot.saturating_sub(step), &mut left_slot, "left")
         };
 
-        let block = api.fetch_block(*slot)?;
-        if block_handler_tx.send((*slot, block)).is_err() {
-            println!("block fetcher: block handler closed. terminating");
-            break;
+        if let Some(block) = api.fetch_block(*slot)? {
+            if block_handler_tx.send((*slot, block)).is_err() {
+                println!("block fetcher: block handler closed. terminating");
+                break;
+            }
+
+            println!("fetched block at slot {slot} ({side_str} side)");
         }
 
-        println!("fetched block at slot {slot} ({side_str} side)");
         *slot = next_slot;
     }
 

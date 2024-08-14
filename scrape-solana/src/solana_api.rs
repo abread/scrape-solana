@@ -92,12 +92,7 @@ impl SolanaApi {
         Ok((min_height, max_height, accounts))
     }
 
-    pub fn fetch_block(&self, slot: u64) -> eyre::Result<Block> {
-        let block = self.fetch_block_inner(slot)?;
-        Block::from_solana_sdk(slot, block)
-    }
-
-    fn fetch_block_inner(&self, slot: u64) -> eyre::Result<UiConfirmedBlock> {
+    pub fn fetch_block(&self, slot: u64) -> eyre::Result<Option<UiConfirmedBlock>> {
         let mut inner = self.0.lock().unwrap();
 
         let now = Instant::now();
@@ -109,7 +104,7 @@ impl SolanaApi {
 
         let mut larger_timeout = MIN_WAIT * 2;
         loop {
-            match inner.client.get_block_with_config(slot, BLOCK_CONFIG) {
+            match inner.client.get_block_with_config(slot, BLOCK_CONFIG).map(Some) {
                 Ok(b) => break Ok(b),
                 Err(ClientError {
                     kind: ClientErrorKind::Reqwest(e),
@@ -124,17 +119,15 @@ impl SolanaApi {
                     kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32009, .. }),
                     ..
                 }) => {
-                    break Err(eyre!(
-                        "skipped block slot={slot}: not present in Solana nodes nor long-term storage"
-                    ));
+                    eprintln!("skipped block slot={slot}: not present in Solana nodes nor long-term storage");
+                    return Ok(None);
                 }
                 Err(ClientError {
                     kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32007, .. }),
                     ..
                 }) => {
-                    break Err(eyre!(
-                        "skipped block slot={slot}: skipped, or missing due to ledger jump to recent snapshot"
-                    ));
+                    eprintln!("skipped block slot={slot}: skipped, or missing due to ledger jump to recent snapshot");
+                    return Ok(None);
                 }
                 r @ Err(_) => {
                     let r = r.wrap_err(format!("failed to fetch next block slot={slot}"));
