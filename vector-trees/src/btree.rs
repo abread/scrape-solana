@@ -394,7 +394,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                 let (idx, exact) = node.find_key_id(key);
 
                 if exact {
-                    core::mem::forget(node);
+                    core::mem::drop(node);
                     return Some(
                         self.get_node_mut(cur_node)
                             .map_mut(move |r| &mut r.keys[idx].as_mut().unwrap().1),
@@ -481,7 +481,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                 return node.insert_node_at(value, idx);
             } else {
                 let child = node.children[idx].unwrap();
-                core::mem::forget(node); // satisfy borrow checker
+                core::mem::drop(node); // satisfy borrow checker
 
                 if self.get_node(child).cur_keys == MAX_KEYS {
                     self.split_child(cur_node, idx);
@@ -528,13 +528,13 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
 
             if exact {
                 if node.leaf {
-                    core::mem::forget(node); // satisfy borrow checker
+                    core::mem::drop(node); // satisfy borrow checker
                     let ret = self.remove_key(node_idx, idx).0;
                     return ret;
                 } else {
                     let left_child = node.children[idx].unwrap();
                     let right_child = node.children[idx + 1].unwrap();
-                    core::mem::forget(node); // satisfy borrow checker
+                    core::mem::drop(node); // satisfy borrow checker
 
                     if self.get_node(left_child).cur_keys > B - 1 {
                         let mut lr_child = left_child;
@@ -569,7 +569,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
             }
 
             if !node.leaf {
-                core::mem::forget(node); // satisfy borrow checker
+                core::mem::drop(node); // satisfy borrow checker
                 let ret = self.ensure_node_degree(node_idx, idx);
                 if ret != node_idx {
                     if cur_node == self.0.root {
@@ -606,12 +606,12 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         let right_child = parent_node.children[key_id + 1].unwrap();
 
         let (mid, _) = parent_node.remove_key_rchild(key_id);
-        core::mem::forget(parent_node); // satisfy borrow checker
+        core::mem::drop(parent_node); // satisfy borrow checker
         let (mut left_node, right_node) = self.get_two_nodes_mut(left_child, right_child);
 
         left_node.merge(mid.unwrap(), right_node);
 
-        core::mem::forget(left_node);
+        core::mem::drop(left_node);
         self.free_node(right_child);
 
         if self.get_node(parent).cur_keys == 0 {
@@ -629,7 +629,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         let child_node = self.get_node(child_node_id);
 
         if child_node.cur_keys < B {
-            core::mem::forget(child_node); // satisfy borrow checker
+            core::mem::drop(child_node); // satisfy borrow checker
 
             if child_id != 0
                 && self
@@ -637,7 +637,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                     .cur_keys
                     > B - 1
             {
-                core::mem::forget(parent_node); // satisfy borrow checker
+                core::mem::drop(parent_node); // satisfy borrow checker
 
                 let (mut key, (mut left, mut right)) = self.get_key_nodes_mut(parent, child_id - 1);
                 let left_key = Option::take(&mut key).unwrap();
@@ -652,7 +652,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                     .cur_keys
                     > B - 1
             {
-                core::mem::forget(parent_node); // satisfy borrow checker
+                core::mem::drop(parent_node); // satisfy borrow checker
 
                 let (mut key, (mut left, mut right)) = self.get_key_nodes_mut(parent, child_id);
                 let right_key = Option::take(&mut key).unwrap();
@@ -663,11 +663,11 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
                 left.children[left_cur_keys] = lchild;
                 *key = nkey;
             } else if child_id > 0 {
-                core::mem::forget(parent_node); // satisfy borrow checker
+                core::mem::drop(parent_node); // satisfy borrow checker
 
                 return self.merge_children(parent, child_id - 1);
             } else {
-                core::mem::forget(parent_node); // satisfy borrow checker
+                core::mem::drop(parent_node); // satisfy borrow checker
 
                 return self.merge_children(parent, child_id);
             }
@@ -700,8 +700,8 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
             }
         }
 
-        core::mem::forget(left);
-        core::mem::forget(right);
+        core::mem::drop(left);
+        core::mem::drop(right);
         self.insert_node(parent, mid);
 
         debug_assert!(self.get_node(parent).children[child_id].is_none());
@@ -840,7 +840,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
             let mut free_node = self.get_node_mut(idx);
             let child_zero = free_node.children[0];
             *free_node = BVecTreeNode::default();
-            core::mem::forget(free_node); // satisfy borrow checker
+            core::mem::drop(free_node); // satisfy borrow checker
             self.0.free_head = child_zero;
             idx
         } else {
@@ -859,7 +859,7 @@ impl<S: Vector<BVecTreeNode<K, V>>, K: Ord + Debug, V: Debug> BVecTreeMap<S, K, 
         debug_assert!(node.children.iter().filter_map(|x| x.as_ref()).count() == 0);
 
         node.children[0] = head;
-        core::mem::forget(node); // satisfy borrow checker
+        core::mem::drop(node); // satisfy borrow checker
         self.0.free_head = Some(node_id);
     }
 }

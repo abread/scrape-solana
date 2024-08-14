@@ -52,7 +52,8 @@ pub struct Db {
     account_index: HugeMap<
         AccountID,
         u64,
-        { chunk_sz::<vector_trees::btree::BVecTreeNode<AccountID, u64>>(256 * MB) },
+        //{ chunk_sz::<vector_trees::btree::BVecTreeNode<AccountID, u64>>(256 * MB) },
+        1, // limitation in current slicing implementation
     >,
 }
 

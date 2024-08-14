@@ -232,10 +232,9 @@ pub struct StoredMapMeta {
 mod tests {
     // Near copy of vector-tree's tests.
 
-    use crate::huge_vec::ZstdTransformer;
     use super::{HugeMap, MapFsStore};
+    use crate::huge_vec::ZstdTransformer;
     use tempdir::TempDir;
-
 
     use rand::{seq::SliceRandom, Rng, SeedableRng};
     use rand_xorshift::XorShiftRng;
