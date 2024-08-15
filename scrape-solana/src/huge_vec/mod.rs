@@ -42,34 +42,13 @@ where
     pub fn new(chunk_storage: Store) -> Result<Self, HugeVecError<Store::Error>> {
         let mut chunk_cache = ChunkCache::new(chunk_storage)?;
 
-        let mut chunk_count = chunk_cache.chunk_count();
+        let chunk_count = chunk_cache.chunk_count();
 
         let len = if chunk_count == 0 {
             0
         } else {
-            let mut last_chunk_idx = chunk_count - 1;
-            let last_chunk = match chunk_cache.get(last_chunk_idx) {
-                Ok(c) => c,
-                Err(e) => {
-                    if last_chunk_idx == 0 {
-                        return Ok(Self {
-                            chunk_cache: RefCell::new(chunk_cache),
-                            len: 0,
-                        });
-                    } else if let Ok(chunk) = chunk_cache.get(last_chunk_idx - 1) {
-                        eprintln!("last chunk corrupted. dropping it");
-                        chunk_cache.truncate(last_chunk_idx)?;
-                        chunk_cache.sync()?;
-
-                        last_chunk_idx -= 1;
-                        chunk_count -= 1;
-
-                        chunk
-                    } else {
-                        return Err(e.into());
-                    }
-                }
-            };
+            let last_chunk_idx = chunk_count - 1;
+            let last_chunk = chunk_cache.get(last_chunk_idx)?;
             let last_chunk_len = last_chunk.borrow_mut().len();
 
             (chunk_count - 1) as u64 * CHUNK_SZ as u64 + last_chunk_len as u64
