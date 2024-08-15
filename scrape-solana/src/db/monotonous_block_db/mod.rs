@@ -153,7 +153,7 @@ impl MonotonousBlockDb {
             }
         }
 
-        assert!(self.block_records.len() >= 1);
+        assert!(!self.block_records.is_empty());
         let endcap_idx = self.block_records.len() - 1;
         let elements_to_check = select_random_elements(&self.block_records, n_samples)
             .map(|(idx, _)| idx)
@@ -240,7 +240,7 @@ impl<'db> BlockIter<'db> {
 impl<'db> Iterator for BlockIter<'db> {
     type Item = eyre::Result<Block>;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx > self.db.block_records.len().saturating_sub(2) {
+        if self.idx >= self.db.block_records.len().saturating_sub(1) {
             None
         } else {
             let block = self.db.get_block(self.idx);
