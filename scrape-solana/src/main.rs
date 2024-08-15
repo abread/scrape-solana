@@ -1,5 +1,5 @@
 use eyre::{eyre, Result, WrapErr};
-use scrape_solana::{actors, solana_api::SolanaApi};
+use scrape_solana::{actors, db::Db, solana_api::SolanaApi};
 use std::{fmt::Debug, path::PathBuf, str::FromStr, sync::Arc};
 
 use clap::Parser;
@@ -43,40 +43,63 @@ fn main() -> Result<()> {
     }
     .to_owned();
 
-    let default_middle_slot_getter = {
+    let default_middle_slot_getter_builder = {
         let args = args.clone();
         let endpoint_url = endpoint_url.to_owned();
         move || {
-            println!("fetching latest block slot");
-            let client =
-                RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
-            let slot = client
-                .get_epoch_info()
-                .expect("failed to get latest block slot")
-                .absolute_slot;
+            let args = args.clone();
+            let endpoint_url = endpoint_url.to_owned();
+            move || {
+                println!("fetching latest block slot");
+                let client =
+                    RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
+                let slot = client
+                    .get_epoch_info()
+                    .expect("failed to get latest block slot")
+                    .absolute_slot;
 
-            let slot = slot - 100; // avoid fetching the latest block, start a bit behind
+                let slot = slot - 100; // avoid fetching the latest block, start a bit behind
 
-            let slot_shard = slot % args.shard_config.n;
-            let slot = if slot_shard != args.shard_config.id {
-                slot.saturating_sub(slot_shard + args.shard_config.n - args.shard_config.id)
-            } else {
+                let slot_shard = slot % args.shard_config.n;
+                let slot = if slot_shard != args.shard_config.id {
+                    slot.saturating_sub(slot_shard + args.shard_config.n - args.shard_config.id)
+                } else {
+                    slot
+                };
+
+                assert!(
+                    slot % args.shard_config.n == args.shard_config.id,
+                    "faulty shard adjustment. expected shard id {}, got {}",
+                    args.shard_config.id,
+                    slot % args.shard_config.n
+                );
+
                 slot
-            };
-
-            assert!(
-                slot % args.shard_config.n == args.shard_config.id,
-                "mismatch between last stored block and shard configuration. expected shard id {}, got {}",
-                args.shard_config.id,
-                slot % args.shard_config.n
-            );
-
-            slot
+            }
         }
     };
 
+    {
+        let db = Db::open(
+            args.db_root_path.clone(),
+            default_middle_slot_getter_builder(),
+            std::io::stdout(),
+        )?;
+
+        for block in db.left_blocks().take(10).chain(db.right_blocks().take(10)) {
+            let slot = block?.slot;
+            assert!(
+                slot % args.shard_config.n == args.shard_config.id,
+                "mismatch between stored block and shard configuration. expected shard id {}, got {}",
+                args.shard_config.id,
+                slot % args.shard_config.n
+            );
+        }
+    }
+
     let api = Arc::new(SolanaApi::new(endpoint_url.to_owned()));
-    let (db_tx, db_handle) = actors::spawn_db_actor(args.db_root_path, default_middle_slot_getter);
+    let (db_tx, db_handle) =
+        actors::spawn_db_actor(args.db_root_path, default_middle_slot_getter_builder());
     let (block_handler_tx, block_handler_handle) =
         actors::spawn_block_handler(Arc::clone(&api), db_tx.clone());
     let (block_fetcher_tx, block_fetcher_handle) = actors::spawn_block_fetcher(

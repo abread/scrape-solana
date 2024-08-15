@@ -1,3 +1,5 @@
+use std::iter::FusedIterator;
+
 use eyre::{eyre, WrapErr};
 
 use super::{chunk_sz, HugeVec, MB};
@@ -214,4 +216,60 @@ impl MonotonousBlockDb {
 
         Ok(block)
     }
+
+    pub fn blocks(&self) -> BlockIter<'_> {
+        BlockIter::new(self)
+    }
 }
+
+pub struct BlockIter<'db> {
+    db: &'db MonotonousBlockDb,
+    idx: u64,
+    idx_back: u64,
+}
+impl<'db> BlockIter<'db> {
+    fn new(db: &'db MonotonousBlockDb) -> Self {
+        Self {
+            db,
+            idx: 0,
+            idx_back: db.block_records.len().saturating_sub(1),
+        }
+    }
+}
+
+impl<'db> Iterator for BlockIter<'db> {
+    type Item = eyre::Result<Block>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx > self.db.block_records.len().saturating_sub(2) {
+            None
+        } else {
+            let block = self.db.get_block(self.idx);
+            self.idx += 1;
+            Some(block)
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.db.block_records.len().saturating_sub(2) as usize;
+        (len, Some(len))
+    }
+}
+
+impl<'db> DoubleEndedIterator for BlockIter<'db> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.idx_back == 0 {
+            None
+        } else {
+            self.idx_back -= 1;
+            Some(self.db.get_block(self.idx_back))
+        }
+    }
+}
+
+impl<'db> ExactSizeIterator for BlockIter<'db> {
+    fn len(&self) -> usize {
+        self.db.block_records.len().saturating_sub(1) as usize
+    }
+}
+
+impl<'db> FusedIterator for BlockIter<'db> {}

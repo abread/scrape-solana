@@ -20,6 +20,8 @@ use model::AccountRecord;
 mod monotonous_block_db;
 use monotonous_block_db::MonotonousBlockDb;
 
+use self::monotonous_block_db::BlockIter;
+
 const MAX_AUTO_ACCOUNT_DATA_LOSS: u64 = 2 * 1024 * 1024; // 2MiB
 
 pub(crate) type HugeVec<T, const CHUNK_SZ: usize> = crate::huge_vec::HugeVec<
@@ -459,5 +461,13 @@ impl Db {
         sync_table!(account_records);
         //sync_table!(account_index);
         Ok(())
+    }
+
+    pub fn left_blocks(&self) -> std::iter::Rev<BlockIter<'_>> {
+        self.left.blocks().rev()
+    }
+
+    pub fn right_blocks(&self) -> BlockIter<'_> {
+        self.right.blocks()
     }
 }
