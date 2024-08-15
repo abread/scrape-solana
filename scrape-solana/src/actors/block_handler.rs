@@ -123,9 +123,6 @@ fn account_fetcher_actor(
         while let Ok(mut more_account_ids) = rx.try_recv() {
             account_ids.append(&mut more_account_ids);
         }
-        if account_ids.is_empty() {
-            continue; // wait for more
-        }
 
         // filter out duplicates
         if db_tx
@@ -142,6 +139,10 @@ fn account_fetcher_actor(
             println!("account fetcher: db panicked. terminating");
             break;
         };
+
+        if account_ids.is_empty() {
+            continue; // wait for more
+        }
 
         // keep min height
         let min_height = last_block_height;
