@@ -151,6 +151,7 @@ impl MonotonousBlockDb {
             }
         }
 
+        assert!(self.block_records.len() >= 1);
         let endcap_idx = self.block_records.len() - 1;
         let elements_to_check = select_random_elements(&self.block_records, n_samples)
             .map(|(idx, _)| idx)
