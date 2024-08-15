@@ -173,16 +173,10 @@ pub trait MapMetaStore {
     fn store_metadata(&mut self, meta: StoredMapMeta) -> Result<(), Self::Error>;
 }
 
-pub struct MapMetaFsStore(RefCell<File>);
+pub struct MapMetaFsStore(RefCell<PathBuf>);
 impl MapMetaFsStore {
-    fn open(path: impl AsRef<Path>) -> Result<Self, io::Error> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
-        Ok(Self(RefCell::new(file)))
+    fn open(path: PathBuf) -> Result<Self, io::Error> {
+        Ok(Self(path))
     }
 }
 
@@ -190,7 +184,15 @@ impl MapMetaStore for MapMetaFsStore {
     type Error = bincode::Error;
 
     fn load_metadata(&self) -> Result<StoredMapMeta, Self::Error> {
-        let mut metadata_file = self.0.borrow_mut();
+        let mut metadata_file = match OpenOptions::new()
+            .read(true)
+            .open(&self.0) {
+                Ok(f) => f,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    return Ok(StoredMapMeta::default());
+                }
+                Err(e) => return Err(e.into()),
+            };
 
         let metadata_size = metadata_file
             .seek(io::SeekFrom::End(0))
@@ -205,17 +207,15 @@ impl MapMetaStore for MapMetaFsStore {
     }
 
     fn store_metadata(&mut self, metadata: StoredMapMeta) -> Result<(), Self::Error> {
-        let metadata_file = self.0.get_mut();
+        let mut tempfile = NamedTempFile::new_in(self.0.parent())?;
 
-        metadata_file
-            .seek(io::SeekFrom::Start(0))
-            .map_err(|e| Box::new(bincode::ErrorKind::Io(e)))?;
-
-        let mut writer = BufWriter::new(metadata_file);
+        let mut writer = BufWriter::new(&mut tempfile);
         bincode::serialize_into(&mut writer, &metadata)?;
         writer
             .flush()
             .map_err(|e| Box::new(bincode::ErrorKind::Io(e)))?;
+
+        tempfile.persist(&self.0)?;
 
         Ok(())
     }

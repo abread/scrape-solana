@@ -8,6 +8,7 @@ use std::{
     ops::BitAnd,
     path::{Path, PathBuf},
 };
+use tempfile::NamedTempFile;
 
 pub trait IndexedStorage<T> {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -29,7 +30,6 @@ use crate::huge_vec::IOTransformer;
 pub struct FsStore<T, IOT> {
     root: PathBuf,
     metadata: BasicStorageMeta,
-    metadata_file: fs::File,
     io_transformer: IOT,
     _t: PhantomData<T>,
 }
@@ -42,14 +42,14 @@ pub enum FsStoreError<IOTErr> {
     #[error("Could not open metadata file")]
     MetadataOpen(#[source] io::Error),
 
-    #[error("Could not seek within metadata")]
-    MetadataSeek(#[source] io::Error),
-
     #[error("Could not read/parse metadata")]
     MetadataRead(#[source] Box<bincode::ErrorKind>),
 
     #[error("Could not write metadata")]
     MetadataWrite(#[source] Box<bincode::ErrorKind>),
+
+    #[error("Could not persist new metadata")]
+    MetadataPersist(#[source] tempfile::PersistError),
 
     #[error("Could not open stored object file")]
     DataOpen(#[source] io::Error),
@@ -62,6 +62,9 @@ pub enum FsStoreError<IOTErr> {
 
     #[error("Could not store object")]
     DataStore(#[source] Box<bincode::ErrorKind>),
+
+    #[error("Could not persist new object version")]
+    DataPersist(#[source] tempfile::PersistError),
 
     #[error("Tried to store non-contiguous data (expected index<={len}, got {idx})")]
     NonContiguousStore { len: usize, idx: usize },
@@ -96,7 +99,7 @@ where
             .seek(io::SeekFrom::End(0))
             .and_then(|_| metadata_file.stream_position())
             .and_then(|size| metadata_file.seek(io::SeekFrom::Start(0)).map(|_| size))
-            .map_err(FsStoreError::MetadataSeek)?;
+            .map_err(FsStoreError::MetadataOpen)?;
 
         let metadata: BasicStorageMeta = if metadata_size == 0 {
             BasicStorageMeta::default()
@@ -110,21 +113,24 @@ where
         Ok(Self {
             root: root.as_ref().to_owned(),
             metadata,
-            metadata_file,
             io_transformer,
             _t: PhantomData,
         })
     }
 
     fn write_metadata(&mut self) -> Result<(), FsStoreError<IOT::Error>> {
-        self.metadata_file
-            .seek(io::SeekFrom::Start(0))
-            .map_err(FsStoreError::MetadataSeek)?;
+        let mut metadata_file =
+            NamedTempFile::new_in(&self.root).map_err(FsStoreError::MetadataOpen)?;
 
-        let writer = BufWriter::new(&mut self.metadata_file);
+        let writer = BufWriter::new(&mut metadata_file);
         self.io_transformer.wrap_write(writer, |w| {
             bincode::serialize_into(w, &self.metadata).map_err(FsStoreError::MetadataWrite)
         })?;
+
+        // persist new version of metadata without the risk of partial writes
+        metadata_file
+            .persist(self.root.join("meta"))
+            .map_err(FsStoreError::MetadataPersist)?;
 
         Ok(())
     }
@@ -185,16 +191,14 @@ where
         let path = self.index_path(idx);
         fs::create_dir_all(path.parent().unwrap()).map_err(FsStoreError::DataOpen)?; // unwrap is safe because we know the path has a parent
 
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(path)
-            .map_err(FsStoreError::DataOpen)?;
+        let mut tempfile = NamedTempFile::new_in(&self.root).map_err(FsStoreError::DataOpen)?;
 
-        self.io_transformer.wrap_write(file, |w| {
+        self.io_transformer.wrap_write(&mut tempfile, |w| {
             bincode::serialize_into(w, object.borrow()).map_err(FsStoreError::DataStore)
         })?;
+
+        // persist new version of object without the risk of partial writes
+        tempfile.persist(path).map_err(FsStoreError::DataPersist)?;
 
         Ok(())
     }
