@@ -38,16 +38,16 @@ fn block_handler_actor(
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
 ) -> eyre::Result<()> {
-    let (new_acc_tx, new_acc_rx) = std::sync::mpsc::sync_channel(256);
+    let (account_fetcher_tx, account_fetcher_rx) = std::sync::mpsc::sync_channel(4096);
 
     let should_stop = Arc::new(AtomicBool::new(false));
-    let filtered_handler_handle = {
+    let account_fetcher_handle = {
         let should_stop = Arc::clone(&should_stop);
         let db_tx = db_tx.clone();
         std::thread::Builder::new()
-            .name("filtered account_ids handler".to_owned())
-            .spawn(move || filtered_account_ids_handler_actor(new_acc_rx, api, db_tx, should_stop))
-            .wrap_err("failed to spawn filtered account ids handler thread")?
+            .name("account fetcher".to_owned())
+            .spawn(move || account_fetcher_actor(account_fetcher_rx, api, db_tx, should_stop))
+            .wrap_err("failed to spawn account fetcher thread")?
     };
 
     let mut last_sync = Instant::now();
@@ -71,13 +71,7 @@ fn block_handler_actor(
             break;
         }
 
-        if db_tx
-            .send(DbOperation::FilterNewAccountSet {
-                account_ids,
-                reply: new_acc_tx.clone(),
-            })
-            .is_err()
-        {
+        if account_fetcher_tx.send(account_ids).is_err() {
             println!("block handler: db closed. terminating");
             break;
         }
@@ -93,16 +87,16 @@ fn block_handler_actor(
 
     // allow filtered account_ids handler to exit
     should_stop.store(true, Ordering::Relaxed);
-    std::mem::drop(new_acc_tx);
+    std::mem::drop(account_fetcher_tx);
 
-    filtered_handler_handle
+    account_fetcher_handle
         .join()
         .expect("filtered new account handler panicked")?;
 
     Ok(())
 }
 
-fn filtered_account_ids_handler_actor(
+fn account_fetcher_actor(
     rx: Receiver<BTreeSet<AccountID>>,
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
@@ -110,14 +104,12 @@ fn filtered_account_ids_handler_actor(
 ) -> eyre::Result<()> {
     println!("block handler[filtered account_ids handler] ready");
 
-    // between filtering and storing some account ids can get duplicated
-    // so we need a last dedupe step
-    let mut last_account_ids = BTreeSet::new();
-
     let mut last_block_height = match get_block_height(&api, &should_stop) {
         Some(res) => res?,
         None => return Ok(()), // stop signal
     };
+
+    let (filter_tx, filter_rx) = std::sync::mpsc::sync_channel(1);
 
     loop {
         // collect all pending account ids
@@ -131,10 +123,25 @@ fn filtered_account_ids_handler_actor(
         while let Ok(mut more_account_ids) = rx.try_recv() {
             account_ids.append(&mut more_account_ids);
         }
-        account_ids.retain(|el| !last_account_ids.contains(el));
         if account_ids.is_empty() {
             continue; // wait for more
         }
+
+        // filter out duplicates
+        if db_tx
+            .send(DbOperation::FilterNewAccountSet {
+                account_ids,
+                reply: filter_tx.clone(),
+            })
+            .is_err()
+        {
+            println!("account fetcher: db closed. terminating");
+            break;
+        }
+        let Ok(account_ids) = filter_rx.recv() else {
+            println!("account fetcher: db panicked. terminating");
+            break;
+        };
 
         // keep min height
         let min_height = last_block_height;
@@ -153,33 +160,13 @@ fn filtered_account_ids_handler_actor(
         };
         last_block_height = max_height;
 
-        // parse accounts
-        let accounts = account_ids_vec
-            .into_iter()
-            .zip(raw_accounts)
-            .inspect(|(id, maybe_account)| {
-                if maybe_account.is_none() {
-                    eprintln!("missing account: {id}");
-                }
-            })
-            .filter_map(|(id, maybe_account)| maybe_account.map(|account| (id, account)))
-            .map(|(id, account)| Account {
-                id: id.into(),
-                owner: account.owner.into(),
-                data: account.data,
-                is_executable: account.executable,
-                min_height,
-                max_height,
-            })
-            .collect();
+        let accounts = parse_accounts(account_ids_vec, raw_accounts, min_height, max_height);
 
         // store accounts
         if db_tx.send(DbOperation::StoreNewAccounts(accounts)).is_err() {
             println!("block handler[filtered account_ids handler]: db closed. terminating");
             break;
         }
-
-        last_account_ids = account_ids;
     }
 
     Ok(())
@@ -191,7 +178,7 @@ fn fetch_raw_accounts(
     should_stop: &AtomicBool,
 ) -> Option<eyre::Result<Vec<Option<solana_sdk::account::Account>>>> {
     let account_ids = account_ids
-        .into_iter()
+        .iter()
         .map(|id| solana_sdk::pubkey::Pubkey::new_from_array(id.to_owned().into()))
         .collect::<Vec<_>>();
 
@@ -232,4 +219,30 @@ fn get_block_height(api: &SolanaApi, should_stop: &AtomicBool) -> Option<eyre::R
             Err(e) => break Some(Err(e.into())),
         }
     }
+}
+
+fn parse_accounts(
+    account_ids_vec: Vec<AccountID>,
+    raw_accounts: Vec<Option<solana_sdk::account::Account>>,
+    min_height: u64,
+    max_height: u64,
+) -> Vec<Account> {
+    account_ids_vec
+        .into_iter()
+        .zip(raw_accounts)
+        .inspect(|(id, maybe_account)| {
+            if maybe_account.is_none() {
+                eprintln!("missing account: {id}");
+            }
+        })
+        .filter_map(|(id, maybe_account)| maybe_account.map(|account| (id, account)))
+        .map(|(id, account)| Account {
+            id,
+            owner: account.owner.into(),
+            data: account.data,
+            is_executable: account.executable,
+            min_height,
+            max_height,
+        })
+        .collect()
 }

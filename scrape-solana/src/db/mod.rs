@@ -400,7 +400,8 @@ impl Db {
 
     pub fn store_new_account(&mut self, account: Account) -> eyre::Result<()> {
         if self.has_account(&account.id) {
-            return Err(eyre!("account {} already present in index", account.id));
+            eprintln!("account {} already present in index", account.id);
+            return Ok(()); // ignore problem, but register it
         }
 
         // create account record
