@@ -111,7 +111,14 @@ impl SolanaApiInner {
         let res = match f(&mut self.client) {
             Ok(r) => {
                 if self.wait != MIN_WAIT {
-                    self.wait -= Duration::from_millis(1);
+                    self.wait -= Duration::from_millis({
+                        let delta = self.wait.as_millis() - MIN_WAIT.as_millis();
+                        if delta < 100 {
+                            5
+                        } else {
+                            (delta as f64).sqrt() as u64
+                        }
+                    });
                     self.wait = self.wait.max(MIN_WAIT);
                 }
                 Ok(r)
