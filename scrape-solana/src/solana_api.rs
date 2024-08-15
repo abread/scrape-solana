@@ -133,6 +133,16 @@ impl SolanaApiInner {
                     request,
                 }))
             }
+            Err(ClientError {
+                kind: ClientErrorKind::Reqwest(inner_e),
+                request,
+            }) if inner_e.is_timeout() || inner_e.is_decode() => {
+                self.wait *= 2;
+                Err(Error::Timeout(ClientError {
+                    kind: ClientErrorKind::Reqwest(inner_e),
+                    request,
+                }))
+            }
             Err(
                 e @ ClientError {
                     kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code, .. }),
@@ -163,7 +173,19 @@ impl SolanaApiInner {
                 self.wait *= 2;
                 Err(Error::Timeout(e))
             }
-            Err(e) => Err(Error::SolanaClient(e)),
+            Err(
+                e @ ClientError {
+                    kind: ClientErrorKind::RpcError(_),
+                    ..
+                },
+            ) => Err(Error::SolanaClient(e)),
+            Err(e) => {
+                self.wait *= 2;
+
+                // this might be a really bad one, we need to wait a big while
+                std::thread::sleep(self.wait.max(Duration::from_secs(30)));
+                Err(Error::Timeout(e))
+            }
         };
 
         self.last_access = Instant::now();
