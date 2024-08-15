@@ -6,10 +6,13 @@ use std::{
     thread::JoinHandle,
 };
 
-use eyre::eyre;
+use eyre::{eyre, WrapErr};
 use solana_transaction_status::UiConfirmedBlock;
 
-use crate::{db::DbSlotLimits, solana_api::SolanaApi};
+use crate::{
+    db::DbSlotLimits,
+    solana_api::{self, SolanaApi},
+};
 
 use super::db::DbOperation;
 
@@ -73,13 +76,24 @@ fn block_fetcher_actor(
             (left_slot.saturating_sub(step), &mut left_slot, "left")
         };
 
-        if let Some(block) = api.fetch_block(*slot)? {
-            if block_handler_tx.send((*slot, block)).is_err() {
-                println!("block fetcher: block handler closed. terminating");
-                break;
-            }
+        match api.fetch_block(*slot) {
+            Ok(Some(block)) => {
+                if block_handler_tx.send((*slot, block)).is_err() {
+                    println!("block fetcher: block handler closed. terminating");
+                    break;
+                }
 
-            println!("fetched block at slot {slot} ({side_str} side)");
+                println!("fetched block at slot {slot} ({side_str} side)");
+            }
+            Ok(None) => {}
+            Err(solana_api::Error::Timeout(e)) => {
+                eprintln!("timeout fetching block at slot {slot} ({side_str} side): {e}");
+                continue;
+            }
+            Err(solana_api::Error::PostTimeoutCooldown) => continue, // not really a timeout, just continuing the previous timeout
+            Err(solana_api::Error::SolanaClient(e)) => {
+                return Err(e).wrap_err("failed to fetch block");
+            }
         }
 
         *slot = next_slot;

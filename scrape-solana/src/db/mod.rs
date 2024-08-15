@@ -5,7 +5,7 @@ use crate::{
     model::Account,
     select_random_elements,
 };
-use eyre::{eyre, Context};
+use eyre::{eyre, WrapErr};
 use std::{
     io,
     path::{Path, PathBuf},

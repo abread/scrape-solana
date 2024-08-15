@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, SyncSender},
         Arc,
     },
@@ -11,8 +12,8 @@ use eyre::WrapErr;
 use solana_transaction_status::UiConfirmedBlock;
 
 use crate::{
-    model::{AccountID, Block},
-    solana_api::SolanaApi,
+    model::{Account, AccountID, Block},
+    solana_api::{self, SolanaApi},
 };
 
 use super::db::DbOperation;
@@ -38,11 +39,14 @@ fn block_handler_actor(
     db_tx: SyncSender<DbOperation>,
 ) -> eyre::Result<()> {
     let (new_acc_tx, new_acc_rx) = std::sync::mpsc::sync_channel(256);
+
+    let should_stop = Arc::new(AtomicBool::new(false));
     let filtered_handler_handle = {
+        let should_stop = Arc::clone(&should_stop);
         let db_tx = db_tx.clone();
         std::thread::Builder::new()
             .name("filtered account_ids handler".to_owned())
-            .spawn(move || filtered_account_ids_handler_actor(new_acc_rx, api, db_tx))
+            .spawn(move || filtered_account_ids_handler_actor(new_acc_rx, api, db_tx, should_stop))
             .wrap_err("failed to spawn filtered account ids handler thread")?
     };
 
@@ -87,7 +91,10 @@ fn block_handler_actor(
         }
     }
 
-    std::mem::drop(new_acc_tx); // allow filtered account_ids handler to exit
+    // allow filtered account_ids handler to exit
+    should_stop.store(true, Ordering::Relaxed);
+    std::mem::drop(new_acc_tx);
+
     filtered_handler_handle
         .join()
         .expect("filtered new account handler panicked")?;
@@ -99,6 +106,7 @@ fn filtered_account_ids_handler_actor(
     rx: Receiver<BTreeSet<AccountID>>,
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
+    should_stop: Arc<AtomicBool>,
 ) -> eyre::Result<()> {
     println!("block handler[filtered account_ids handler] ready");
 
@@ -106,13 +114,20 @@ fn filtered_account_ids_handler_actor(
     // so we need a last dedupe step
     let mut last_account_ids = BTreeSet::new();
 
+    let mut last_block_height = match get_block_height(&api, &should_stop) {
+        Some(res) => res?,
+        None => return Ok(()), // stop signal
+    };
+
     loop {
         // collect all pending account ids
         let Ok(mut account_ids) = rx.recv() else {
             break;
         };
-        std::thread::sleep(Duration::from_secs(1)); // sleep a bit to allow account ids to
-                                                    // accumulate
+
+        // sleep a bit to allow account ids to accumulate
+        std::thread::sleep(Duration::from_secs(1));
+
         while let Ok(mut more_account_ids) = rx.try_recv() {
             account_ids.append(&mut more_account_ids);
         }
@@ -121,7 +136,44 @@ fn filtered_account_ids_handler_actor(
             continue; // wait for more
         }
 
-        let accounts = api.fetch_accounts(account_ids.clone())?;
+        // keep min height
+        let min_height = last_block_height;
+
+        // fetch accounts
+        let account_ids_vec = account_ids.iter().cloned().collect::<Vec<_>>();
+        let raw_accounts = match fetch_raw_accounts(&api, &account_ids_vec, &should_stop) {
+            Some(res) => res?,
+            None => break, // stop signal
+        };
+
+        // fetch max height
+        let max_height = match get_block_height(&api, &should_stop) {
+            Some(res) => res?,
+            None => break, // stop signal
+        };
+        last_block_height = max_height;
+
+        // parse accounts
+        let accounts = account_ids_vec
+            .into_iter()
+            .zip(raw_accounts)
+            .inspect(|(id, maybe_account)| {
+                if maybe_account.is_none() {
+                    eprintln!("missing account: {id}");
+                }
+            })
+            .filter_map(|(id, maybe_account)| maybe_account.map(|account| (id, account)))
+            .map(|(id, account)| Account {
+                id: id.into(),
+                owner: account.owner.into(),
+                data: account.data,
+                is_executable: account.executable,
+                min_height,
+                max_height,
+            })
+            .collect();
+
+        // store accounts
         if db_tx.send(DbOperation::StoreNewAccounts(accounts)).is_err() {
             println!("block handler[filtered account_ids handler]: db closed. terminating");
             break;
@@ -131,4 +183,53 @@ fn filtered_account_ids_handler_actor(
     }
 
     Ok(())
+}
+
+fn fetch_raw_accounts(
+    api: &SolanaApi,
+    account_ids: &[AccountID],
+    should_stop: &AtomicBool,
+) -> Option<eyre::Result<Vec<Option<solana_sdk::account::Account>>>> {
+    let account_ids = account_ids
+        .into_iter()
+        .map(|id| solana_sdk::pubkey::Pubkey::new_from_array(id.to_owned().into()))
+        .collect::<Vec<_>>();
+
+    loop {
+        match api.fetch_accounts(&account_ids) {
+            Ok(accounts) => break Some(Ok(accounts)),
+            Err(solana_api::Error::Timeout(e)) => {
+                eprintln!("timeout fetching accounts: {e}");
+                if should_stop.load(Ordering::Relaxed) {
+                    break None;
+                }
+            }
+            Err(solana_api::Error::PostTimeoutCooldown) => {
+                if should_stop.load(Ordering::Relaxed) {
+                    break None;
+                }
+            }
+            Err(e) => break Some(Err(e.into())),
+        }
+    }
+}
+
+fn get_block_height(api: &SolanaApi, should_stop: &AtomicBool) -> Option<eyre::Result<u64>> {
+    loop {
+        match api.get_block_height() {
+            Ok(height) => break Some(Ok(height)),
+            Err(solana_api::Error::Timeout(e)) => {
+                eprintln!("timeout fetching block height: {e}");
+                if should_stop.load(Ordering::Relaxed) {
+                    return None;
+                }
+            }
+            Err(solana_api::Error::PostTimeoutCooldown) => {
+                if should_stop.load(Ordering::Relaxed) {
+                    return None;
+                }
+            }
+            Err(e) => break Some(Err(e.into())),
+        }
+    }
 }
