@@ -83,7 +83,7 @@ impl ZstdTransformer {
 impl Default for ZstdTransformer {
     fn default() -> Self {
         Self {
-            level: 3,
+            level: 10,
             dictionary: None,
         }
     }
