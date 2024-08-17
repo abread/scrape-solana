@@ -140,14 +140,14 @@ fn upgrade_db<
         "LOGIC BUG: db is already at latest version"
     );
 
-    let _ = writeln!(out, "running quick heal on old db");
-    let (issues, res) = old_db.heal(0);
+    let _ = writeln!(out, "running full heal on old db");
+    let (issues, res) = old_db.heal(u64::MAX);
     for issue in issues {
         let _ = writeln!(out, " > {issue}");
     }
     old_db.sync()?;
     res?;
-    let _ = writeln!(out, "quick heal on old db complete");
+    let _ = writeln!(out, "full heal on old db complete");
 
     let old_db = old_db; // make old db immutable
 
@@ -557,13 +557,20 @@ impl<
         }
 
         let endcap_idx = self.account_records.len() - 1;
-        let elements_to_check = select_random_elements(&self.account_records, n_samples)
-            .map(|(idx, _)| idx)
-            .filter(|&idx| idx as u64 != endcap_idx)
-            .collect::<Vec<_>>();
 
-        for idx in elements_to_check {
-            self.check_account(idx as u64, issues)?;
+        if n_samples == u64::MAX {
+            for idx in 0..endcap_idx {
+                self.check_account(idx, issues)?;
+            }
+        } else {
+            let elements_to_check = select_random_elements(&self.account_records, n_samples)
+                .map(|(idx, _)| idx)
+                .filter(|&idx| idx as u64 != endcap_idx)
+                .collect::<Vec<_>>();
+
+            for idx in elements_to_check {
+                self.check_account(idx as u64, issues)?;
+            }
         }
 
         Ok(())

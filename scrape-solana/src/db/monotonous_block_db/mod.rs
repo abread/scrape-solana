@@ -156,13 +156,20 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
 
         assert!(!self.block_records.is_empty());
         let endcap_idx = self.block_records.len() - 1;
-        let elements_to_check = select_random_elements(&self.block_records, n_samples)
-            .map(|(idx, _)| idx)
-            .filter(|&idx| idx as u64 != endcap_idx)
-            .collect::<Vec<_>>();
+        if n_samples == u64::MAX {
+            // check ALL blocks
+            for idx in 0..endcap_idx {
+                self.check_block(idx, issues)?;
+            }
+        } else {
+            let elements_to_check = select_random_elements(&self.block_records, n_samples)
+                .map(|(idx, _)| idx)
+                .filter(|&idx| idx as u64 != endcap_idx)
+                .collect::<Vec<_>>();
 
-        for idx in elements_to_check {
-            self.check_block(idx as u64, issues)?;
+            for idx in elements_to_check {
+                self.check_block(idx as u64, issues)?;
+            }
         }
 
         if self.block_records.len() >= 2
