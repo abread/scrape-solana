@@ -224,6 +224,25 @@ impl<'r, T, TR: 'r, const CHUNK_SZ: usize> vector_trees::Ref<'r, TR>
         }
     }
 }
+impl<'r, T, TR, const CHUNK_SZ: usize, U: PartialEq<TR>> PartialEq<U>
+    for ItemRef<'r, T, TR, CHUNK_SZ>
+where
+    TR: PartialEq,
+{
+    fn eq(&self, other: &U) -> bool {
+        other.eq(self.item_ref.deref())
+    }
+}
+impl<'r, T, TR, const CHUNK_SZ: usize> Debug for ItemRef<'r, T, TR, CHUNK_SZ>
+where
+    TR: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ItemRef")
+            .field(self.item_ref.deref())
+            .finish()
+    }
+}
 
 pub struct ItemRefMut<'r, T, TR, const CHUNK_SZ: usize> {
     chunk_rc: Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>,
@@ -253,6 +272,25 @@ impl<'r, T, TR: 'r, const CHUNK_SZ: usize> vector_trees::RefMut<'r, TR>
             chunk_rc: Rc::clone(&self.chunk_rc),
             item_ref: RefMut::map(self.item_ref, mapper),
         }
+    }
+}
+impl<'r, T, TR, const CHUNK_SZ: usize, U: PartialEq<TR>> PartialEq<U>
+    for ItemRefMut<'r, T, TR, CHUNK_SZ>
+where
+    TR: PartialEq,
+{
+    fn eq(&self, other: &U) -> bool {
+        other.eq(self.item_ref.deref())
+    }
+}
+impl<'r, T, TR, const CHUNK_SZ: usize> Debug for ItemRefMut<'r, T, TR, CHUNK_SZ>
+where
+    TR: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ItemRefMut")
+            .field(self.item_ref.deref())
+            .finish()
     }
 }
 

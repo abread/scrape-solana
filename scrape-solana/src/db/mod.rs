@@ -268,6 +268,15 @@ fn upgrade_db<
         check_len_match!(left.txs);
         check_len_match!(right.block_records);
         check_len_match!(right.txs);
+
+        old_db
+            .left
+            .block_records
+            .iter()
+            .zip(new_db.left.block_records.iter())
+            .for_each(|(old, new)| {
+                assert_eq!(old, new);
+            });
     }
 
     let new_checksum_handle = {
