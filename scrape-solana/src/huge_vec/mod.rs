@@ -14,7 +14,7 @@ pub use chunk::Chunk;
 pub use io_transformer::{IOTransformer, ZstdTransformer};
 pub use storage::{FsStore, FsStoreError, IndexedStorage};
 
-pub(crate) const CHUNK_CACHE_RECLAMATION_INTERVAL: usize = 64;
+pub(crate) const CHUNK_CACHE_RECLAMATION_INTERVAL: usize = 32;
 
 pub struct HugeVec<T, Store, const CHUNK_SZ: usize = 4096>
 where

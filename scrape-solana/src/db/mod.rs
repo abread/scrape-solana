@@ -52,9 +52,9 @@ const DB_PARAMS: [DbParams; 3] = [
         account_data_cs: 268435,
     },
     DbParams {
-        block_rec_cs: 1024,
-        tx_cs: 8192,
-        account_rec_cs: 1024,
+        block_rec_cs: 2048,
+        tx_cs: 16384,
+        account_rec_cs: 2048,
         account_data_cs: 8 * 1024 * 1024, // 8MB
     },
 ];
