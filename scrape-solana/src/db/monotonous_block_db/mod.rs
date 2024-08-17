@@ -119,7 +119,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         if self
             .block_records
             .last()?
-            .map(|b| !b.is_endcap() || b.txs_start_idx > self.txs.len())
+            .map(|b| !b.is_endcap() || b.txs_start_idx != self.txs.len())
             .unwrap()
         {
             let (n_bad_blocks, n_bad_txs) = {

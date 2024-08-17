@@ -462,7 +462,7 @@ impl<
         if self
             .account_records
             .last()?
-            .map(|b| !b.is_endcap() || b.data_start_idx > self.account_data.len())
+            .map(|b| !b.is_endcap() || b.data_start_idx != self.account_data.len())
             .unwrap()
         {
             let (n_bad_accounts, n_bad_account_data_bytes) = {
