@@ -201,13 +201,13 @@ fn upgrade_db<
     // copy blocks
     // iterate left blocks in reverse to match storage order (from middle slot to 0)
     for block in old_db.left_blocks().rev().chain(old_db.right_blocks()) {
-        b_tx.send(block).expect("putter thread panicked");
+        let _ = b_tx.send(block);
     }
     std::mem::drop(b_tx);
 
     for account_idx in 0..old_db.account_records.len().saturating_sub(1) {
         let account = old_db.get_account_by_idx(account_idx);
-        a_tx.send(account).expect("putter thread panicked");
+        let _ = a_tx.send(account);
     }
     std::mem::drop(a_tx);
 
