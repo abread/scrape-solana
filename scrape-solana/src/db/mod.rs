@@ -518,6 +518,21 @@ impl<
             }
         }
 
+        if self.account_records.len() >= 2
+            && self
+                .check_account(self.account_records.len() - 1, &mut Vec::new())
+                .is_err()
+        {
+            issues.push("last account is corrupted: removing".to_owned());
+            let data_next_start_idx = self.account_records.last().unwrap().unwrap().data_start_idx;
+            let _ = std::mem::replace(
+                &mut *self.account_records.last_mut().unwrap().unwrap(),
+                AccountRecord::endcap(data_next_start_idx),
+            );
+            self.account_records
+                .truncate(self.account_records.len() - 1)?;
+        }
+
         Ok(())
     }
 
