@@ -85,13 +85,13 @@ fn block_handler_actor(
         }
     }
 
-    // allow filtered account_ids handler to exit
+    // allow account fetcher to exit
     should_stop.store(true, Ordering::Relaxed);
     std::mem::drop(account_fetcher_tx);
 
     account_fetcher_handle
         .join()
-        .expect("filtered new account handler panicked")?;
+        .expect("account fetcher panicked")?;
 
     Ok(())
 }
@@ -102,7 +102,7 @@ fn account_fetcher_actor(
     db_tx: SyncSender<DbOperation>,
     should_stop: Arc<AtomicBool>,
 ) -> eyre::Result<()> {
-    println!("block handler[filtered account_ids handler] ready");
+    println!("block handler[account fetcher] ready");
 
     let mut last_block_height = match get_block_height(&api, &should_stop) {
         Some(res) => res?,
@@ -165,7 +165,7 @@ fn account_fetcher_actor(
 
         // store accounts
         if db_tx.send(DbOperation::StoreNewAccounts(accounts)).is_err() {
-            println!("block handler[filtered account_ids handler]: db closed. terminating");
+            println!("block handler[account fetcher]: db closed. terminating");
             break;
         }
     }
