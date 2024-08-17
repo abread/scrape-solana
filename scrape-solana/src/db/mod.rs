@@ -221,12 +221,12 @@ fn upgrade_db<
         let _ = writeln!(
             out,
             "old: {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
-            new_db.left.block_records.len() - 1,
-            new_db.right.block_records.len() - 1,
-            new_db.left.txs.len(),
-            new_db.right.txs.len(),
-            new_db.account_records.len() - 1,
-            new_db.account_data.len()
+            old_db.left.block_records.len() - 1,
+            old_db.right.block_records.len() - 1,
+            old_db.left.txs.len(),
+            old_db.right.txs.len(),
+            old_db.account_records.len() - 1,
+            old_db.account_data.len()
         );
         let _ = writeln!(
             out,
