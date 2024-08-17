@@ -231,9 +231,9 @@ fn upgrade_db<
                 eyre::ensure!(
                     old_db.$side.$name.len() == new_db.$side.$name.len(),
                     concat!(
-                        stringify!(side),
+                        stringify!($side),
                         ".",
-                        stringify!(name),
+                        stringify!($name),
                         " length mismatch: old {} != new {}"
                     ),
                     old_db.$side.$name.len(),
