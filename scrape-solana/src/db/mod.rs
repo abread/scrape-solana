@@ -224,7 +224,14 @@ fn upgrade_db<
             let new_iter = new_db.left_blocks().rev().enumerate();
             for (idx, new_block) in new_iter {
                 let new_block = new_block?;
-                let old_block: Block = block_rx.recv().expect("missing block in old db")?;
+                let old_block: Block = match block_rx.recv() {
+                    Ok(b) => b,
+                    Err(_) => {
+                        return Err(eyre::eyre!(
+                            "upgrade failed: old db missing block {idx} present in new db"
+                        ))
+                    }
+                };
 
                 assert_eq!(
                     new_block.height, old_block.height,
@@ -251,8 +258,9 @@ fn upgrade_db<
         })
     };
     for block in old_db.left_blocks().rev() {
-        block_tx.send(block).expect("cmp thread panicked");
+        block_tx.send(block?).expect("cmp thread panicked");
     }
+    std::mem::drop(block_tx);
     cmp_thread.join().expect("cmp thread panicked")?;
 
     let new_checksum_handle = {
