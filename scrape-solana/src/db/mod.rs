@@ -151,6 +151,17 @@ fn upgrade_db<
 
     let old_db = old_db; // make old db immutable
 
+    let _ = writeln!(
+        out,
+        "loaded {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
+        old_db.left.block_records.len() - 1,
+        old_db.right.block_records.len() - 1,
+        old_db.left.txs.len(),
+        old_db.right.txs.len(),
+        old_db.account_records.len() - 1,
+        old_db.account_data.len()
+    );
+
     let _ = writeln!(out, "creating new db in temporary directory");
     let new_path = tempfile::tempdir_in(root_path.parent().unwrap_or(Path::new("..")))?;
     {
