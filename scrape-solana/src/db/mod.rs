@@ -187,18 +187,16 @@ fn upgrade_db<
         })
     };
 
-    for block in old_db.left_blocks().chain(old_db.right_blocks()) {
-        let Ok(_) = b_tx.send(block) else {
-            break; /* putter panicked */
-        };
+    // copy blocks
+    // iterate left blocks in reverse to match storage order (from middle slot to 0)
+    for block in old_db.left_blocks().rev().chain(old_db.right_blocks()) {
+        b_tx.send(block).expect("putter thread panicked");
     }
     std::mem::drop(b_tx);
 
     for account_idx in 0..old_db.account_records.len().saturating_sub(1) {
         let account = old_db.get_account_by_idx(account_idx);
-        let Ok(_) = a_tx.send(account) else {
-            break; /* putter panicked */
-        };
+        a_tx.send(account).expect("putter thread panicked");
     }
     std::mem::drop(a_tx);
 
@@ -206,7 +204,41 @@ fn upgrade_db<
         .join()
         .expect("upgrade failed: putter thread panicked")?;
 
-    let _ = writeln!(out, "data copied, ensuring new db checksum matches old db");
+    let _ = writeln!(out, "data copied, ensuring new db contents match old db");
+    {
+        let new_db = Db::open_existing(new_path.path())?;
+        macro_rules! check_len_match {
+            ($name:ident) => {
+                eyre::ensure!(
+                    old_db.$name.len() == new_db.$name.len(),
+                    concat!(stringify!(name), " length mismatch: old {} != new {}"),
+                    old_db.$name.len(),
+                    new_db.$name.len(),
+                );
+            };
+            ($side:ident . $name:ident) => {
+                eyre::ensure!(
+                    old_db.$side.$name.len() == new_db.$side.$name.len(),
+                    concat!(
+                        stringify!(side),
+                        ".",
+                        stringify!(name),
+                        " length mismatch: old {} != new {}"
+                    ),
+                    old_db.$side.$name.len(),
+                    new_db.$side.$name.len(),
+                );
+            };
+        }
+
+        check_len_match!(account_records);
+        check_len_match!(account_data);
+        check_len_match!(left.block_records);
+        check_len_match!(left.txs);
+        check_len_match!(right.block_records);
+        check_len_match!(right.txs);
+    }
+
     let new_checksum_handle = {
         let new_path = new_path.path().to_owned();
         std::thread::spawn(move || {
