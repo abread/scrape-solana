@@ -447,20 +447,38 @@ impl Db {
     }
 
     pub fn checksum(&self) -> eyre::Result<u64> {
-        const CRC: crc::Crc<u64, crc::Table<1>> =
-            crc::Crc::<u64, crc::Table<1>>::new(&crc::CRC_64_GO_ISO);
-        let mut hasher = CRC.digest();
+        let (b_tx, b_rx) = std::sync::mpsc::sync_channel(128);
+        let (a_tx, a_rx) = std::sync::mpsc::sync_channel(128);
+        let worker = std::thread::spawn(|| {
+            const CRC: crc::Crc<u64, crc::Table<1>> =
+                crc::Crc::<u64, crc::Table<1>>::new(&crc::CRC_64_GO_ISO);
+            let mut hasher = CRC.digest();
+
+            for block in b_rx {
+                let block = block?;
+                hasher.update(&checksum(&block).to_le_bytes());
+            }
+
+            for account in a_rx {
+                let account = account?;
+                hasher.update(&checksum(&account).to_le_bytes());
+            }
+
+            Ok(hasher.finalize())
+        });
+
         for block in self.left_blocks().chain(self.right_blocks()) {
-            let block = block?;
-            hasher.update(&checksum(&block).to_le_bytes());
+            b_tx.send(block).expect("checksum worker panicked?");
         }
+        std::mem::drop(b_tx);
 
         for account_idx in 0..self.account_records.len().saturating_sub(1) {
-            let account = self.get_account_by_idx(account_idx)?;
-            hasher.update(&checksum(&account).to_le_bytes());
+            a_tx.send(self.get_account_by_idx(account_idx))
+                .expect("checksum worker panicked?");
         }
+        std::mem::drop(a_tx);
 
-        Ok(hasher.finalize())
+        worker.join().expect("checksum worker panicked")
     }
 
     pub fn sync(&mut self) -> eyre::Result<()> {
