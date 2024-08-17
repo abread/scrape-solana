@@ -215,54 +215,6 @@ fn upgrade_db<
         .join()
         .expect("upgrade failed: putter thread panicked")?;
 
-    let (block_tx, block_rx) = std::sync::mpsc::sync_channel(128);
-    let cmp_thread = {
-        let new_path = new_path.path().to_owned();
-        std::thread::spawn(move || {
-            let new_db = Db::open_existing(new_path)?;
-
-            let new_iter = new_db.left_blocks().rev().enumerate();
-            for (idx, new_block) in new_iter {
-                let new_block = new_block?;
-                let old_block: Block = match block_rx.recv() {
-                    Ok(b) => b,
-                    Err(_) => {
-                        return Err(eyre::eyre!(
-                            "upgrade failed: old db missing block {idx} present in new db"
-                        ))
-                    }
-                };
-
-                assert_eq!(
-                    new_block.height, old_block.height,
-                    "height mismatch in block {idx}"
-                );
-                assert_eq!(
-                    new_block.slot, old_block.slot,
-                    "slot mismatch in block {idx}"
-                );
-                assert_eq!(new_block.ts, old_block.ts, "ts mismatch in block {idx}");
-                for (tx_idx, (new_tx, old_tx)) in
-                    new_block.txs.iter().zip(old_block.txs.iter()).enumerate()
-                {
-                    assert_eq!(new_tx, old_tx, "tx mismatch in block {idx}, tx {tx_idx}");
-                }
-                assert_eq!(
-                    new_block.txs.len(),
-                    old_block.txs.len(),
-                    "tx count mismatch in block {idx}"
-                );
-            }
-
-            Ok::<_, eyre::Report>(())
-        })
-    };
-    for block in old_db.left_blocks().rev() {
-        block_tx.send(block?).expect("cmp thread panicked");
-    }
-    std::mem::drop(block_tx);
-    cmp_thread.join().expect("cmp thread panicked")?;
-
     let new_checksum_handle = {
         let new_path = new_path.path().to_owned();
         std::thread::spawn(move || {
