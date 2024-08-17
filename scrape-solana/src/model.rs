@@ -42,7 +42,7 @@ impl Block {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Tx {
     pub version: TxVersion,
     pub fee: u64,
@@ -77,7 +77,7 @@ impl TryFrom<solana_transaction_status::EncodedTransactionWithStatusMeta> for Tx
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Account {
     pub id: AccountID,
     pub owner: AccountID,
@@ -130,13 +130,13 @@ impl Debug for TxVersion {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TxPayload {
     pub account_table: Vec<AccountID>,
     pub instrs: Vec<TxInstruction>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub struct TxInstruction {
     pub program_account_idx: u8,
     pub account_idxs: Vec<u8>,

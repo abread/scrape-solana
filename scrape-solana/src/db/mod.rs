@@ -215,60 +215,45 @@ fn upgrade_db<
         .join()
         .expect("upgrade failed: putter thread panicked")?;
 
-    let _ = writeln!(out, "data copied, ensuring new db contents match old db");
-    {
-        let new_db = Db::open_existing(new_path.path())?;
-        let _ = writeln!(
-            out,
-            "old: {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
-            old_db.left.block_records.len() - 1,
-            old_db.right.block_records.len() - 1,
-            old_db.left.txs.len(),
-            old_db.right.txs.len(),
-            old_db.account_records.len() - 1,
-            old_db.account_data.len()
-        );
-        let _ = writeln!(
-            out,
-            "new: {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
-            new_db.left.block_records.len() - 1,
-            new_db.right.block_records.len() - 1,
-            new_db.left.txs.len(),
-            new_db.right.txs.len(),
-            new_db.account_records.len() - 1,
-            new_db.account_data.len()
-        );
-        macro_rules! check_len_match {
-            ($name:ident) => {
-                eyre::ensure!(
-                    old_db.$name.len() == new_db.$name.len(),
-                    concat!(stringify!(name), " length mismatch: old {} != new {}"),
-                    old_db.$name.len(),
-                    new_db.$name.len(),
-                );
-            };
-            ($side:ident . $name:ident) => {
-                eyre::ensure!(
-                    old_db.$side.$name.len() == new_db.$side.$name.len(),
-                    concat!(
-                        stringify!($side),
-                        ".",
-                        stringify!($name),
-                        " length mismatch: old {} != new {}"
-                    ),
-                    old_db.$side.$name.len(),
-                    new_db.$side.$name.len(),
-                );
-            };
-        }
+    let (block_tx, block_rx) = std::sync::mpsc::sync_channel(128);
+    let cmp_thread = {
+        let new_path = new_path.path().to_owned();
+        std::thread::spawn(move || {
+            let new_db = Db::open_existing(new_path)?;
 
-        check_len_match!(account_records);
-        check_len_match!(account_data);
-        check_len_match!(left.block_records);
-        check_len_match!(left.txs);
-        check_len_match!(right.block_records);
-        check_len_match!(right.txs);
+            let new_iter = new_db.left_blocks().rev().enumerate();
+            for (idx, new_block) in new_iter {
+                let new_block = new_block?;
+                let old_block: Block = block_rx.recv().expect("missing block in old db")?;
+
+                assert_eq!(
+                    new_block.height, old_block.height,
+                    "height mismatch in block {idx}"
+                );
+                assert_eq!(
+                    new_block.slot, old_block.slot,
+                    "slot mismatch in block {idx}"
+                );
+                assert_eq!(new_block.ts, old_block.ts, "ts mismatch in block {idx}");
+                for (tx_idx, (new_tx, old_tx)) in
+                    new_block.txs.iter().zip(old_block.txs.iter()).enumerate()
+                {
+                    assert_eq!(new_tx, old_tx, "tx mismatch in block {idx}, tx {tx_idx}");
+                }
+                assert_eq!(
+                    new_block.txs.len(),
+                    old_block.txs.len(),
+                    "tx count mismatch in block {idx}"
+                );
+            }
+
+            Ok::<_, eyre::Report>(())
+        })
+    };
+    for block in old_db.left_blocks().rev() {
+        block_tx.send(block).expect("cmp thread panicked");
     }
+    cmp_thread.join().expect("cmp thread panicked")?;
 
     let new_checksum_handle = {
         let new_path = new_path.path().to_owned();
