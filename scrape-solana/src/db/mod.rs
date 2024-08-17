@@ -218,6 +218,26 @@ fn upgrade_db<
     let _ = writeln!(out, "data copied, ensuring new db contents match old db");
     {
         let new_db = Db::open_existing(new_path.path())?;
+        let _ = writeln!(
+            out,
+            "old: {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
+            new_db.left.block_records.len() - 1,
+            new_db.right.block_records.len() - 1,
+            new_db.left.txs.len(),
+            new_db.right.txs.len(),
+            new_db.account_records.len() - 1,
+            new_db.account_data.len()
+        );
+        let _ = writeln!(
+            out,
+            "new: {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
+            new_db.left.block_records.len() - 1,
+            new_db.right.block_records.len() - 1,
+            new_db.left.txs.len(),
+            new_db.right.txs.len(),
+            new_db.account_records.len() - 1,
+            new_db.account_data.len()
+        );
         macro_rules! check_len_match {
             ($name:ident) => {
                 eyre::ensure!(
