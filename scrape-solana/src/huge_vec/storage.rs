@@ -74,6 +74,9 @@ pub enum FsStoreError<IOTErr> {
 
     #[error("I/O error (from I/O transformer)")]
     IOError(#[from] IOTErr),
+
+    #[error("Store corrupted")]
+    StoreCorrupted,
 }
 
 impl<T, IOT> FsStore<T, IOT>
@@ -110,12 +113,37 @@ where
             })?
         };
 
-        Ok(Self {
+        let mut store = Self {
             root: root.as_ref().to_owned(),
             metadata,
             io_transformer,
             _t: PhantomData,
-        })
+        };
+        store.heal()?;
+
+        Ok(store)
+    }
+
+    fn heal(&mut self) -> Result<(), FsStoreError<IOT::Error>> {
+        if self.is_empty()? {
+            return Ok(());
+        }
+
+        if self.len()? >= 2 && self.load(self.len()? - 2).is_err() {
+            return Err(FsStoreError::StoreCorrupted);
+        }
+
+        if self.load(self.len()? - 1).is_err() {
+            match std::fs::remove_file(self.index_path(self.len()? - 1)) {
+                Ok(_) => (),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                Err(e) => return Err(FsStoreError::DataRemove(e)),
+            }
+            self.metadata.len -= 1;
+            self.write_metadata()?;
+        }
+
+        Ok(())
     }
 
     fn write_metadata(&mut self) -> Result<(), FsStoreError<IOT::Error>> {
