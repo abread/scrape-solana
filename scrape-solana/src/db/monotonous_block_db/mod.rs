@@ -165,6 +165,20 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
             self.check_block(idx as u64, issues)?;
         }
 
+        if self.block_records.len() >= 2
+            && self
+                .check_block(self.block_records.len() - 1, &mut Vec::new())
+                .is_err()
+        {
+            issues.push("last block is corrupted: removing".to_owned());
+            let txs_next_start_idx = self.block_records.last().unwrap().unwrap().txs_start_idx;
+            let _ = std::mem::replace(
+                &mut *self.block_records.last_mut().unwrap().unwrap(),
+                BlockRecord::endcap(txs_next_start_idx),
+            );
+            self.block_records.truncate(self.block_records.len() - 1)?;
+        }
+
         Ok(())
     }
 
