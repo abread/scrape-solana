@@ -7,7 +7,7 @@ use crate::{
 };
 use eyre::{eyre, WrapErr};
 use std::{
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -32,25 +32,231 @@ pub(crate) type HugeVec<T, const CHUNK_SZ: usize> = crate::huge_vec::HugeVec<
 /*pub(crate) type HugeMap<K, V, const CHUNK_SZ: usize> =
 huge_map::HugeMap<K, V, MapFsStore<ZstdTransformer>, CHUNK_SZ>;*/
 
-pub(crate) const fn chunk_sz<T>(target_mem_usage_bytes: usize) -> usize {
-    let target_chunk_sz_bytes =
-        target_mem_usage_bytes / crate::huge_vec::CHUNK_CACHE_RECLAMATION_INTERVAL;
-
-    target_chunk_sz_bytes / std::mem::size_of::<T>()
+struct DbParams {
+    block_rec_cs: usize,
+    tx_cs: usize,
+    account_rec_cs: usize,
+    account_data_cs: usize,
 }
-pub(crate) const MB: usize = 1024 * 1024;
+const DB_PARAMS: [DbParams; 3] = [
+    DbParams {
+        block_rec_cs: 699,
+        tx_cs: 2048,
+        account_rec_cs: 1290,
+        account_data_cs: 268435,
+    },
+    DbParams {
+        block_rec_cs: 699,
+        tx_cs: 2048,
+        account_rec_cs: 1290,
+        account_data_cs: 268435,
+    },
+    DbParams {
+        block_rec_cs: 1024,
+        tx_cs: 8192,
+        account_rec_cs: 1024,
+        account_data_cs: 8 * 1024 * 1024, // 8MB
+    },
+];
 
-pub struct Db {
+macro_rules! db_version {
+    ($name:ident, $v:literal) => {
+        pub type $name = DbGeneric<
+            $v,
+            { DB_PARAMS[$v].block_rec_cs },
+            { DB_PARAMS[$v].tx_cs },
+            { DB_PARAMS[$v].account_rec_cs },
+            { DB_PARAMS[$v].account_data_cs },
+        >;
+    };
+}
+db_version!(DbV1, 1);
+db_version!(DbV2, 2);
+
+pub const LATEST_VERSION: u64 = 2;
+pub type Db = DbV2;
+
+pub fn open(
+    root_path: PathBuf,
+    default_middle_slot_getter: impl FnOnce() -> u64,
+    mut out: impl io::Write,
+) -> eyre::Result<Db> {
+    let version: u64 = match std::fs::read_to_string(root_path.join("version")) {
+        Ok(v) => Ok(v),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Db::create(root_path, default_middle_slot_getter(), out)
+        }
+        Err(e) => Err(e),
+    }?
+    .parse()?;
+
+    let mut db = match version {
+        1 => {
+            let old_db = DbV1::open_existing(root_path.clone())?;
+            upgrade_db(root_path, version, old_db, &mut out)
+        }
+        2 => Db::open_existing(root_path),
+        _ => Err(eyre!("unsupported version: {version}")),
+    }?;
+
+    let _ = writeln!(out, "Auto-healing DB...");
+    let (issues, res) = db.heal(128);
+    for issue in issues {
+        let _ = writeln!(out, " > {issue}");
+    }
+    db.sync()?;
+    res.wrap_err("Failed to auto-heal DB")?;
+    let _ = writeln!(out, "DB healed");
+
+    let _ = writeln!(
+        out,
+        "loaded {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
+        db.left.block_records.len() - 1,
+        db.right.block_records.len() - 1,
+        db.left.txs.len(),
+        db.right.txs.len(),
+        db.account_records.len() - 1,
+        db.account_data.len()
+    );
+
+    Ok(db)
+}
+
+fn upgrade_db<
+    const OLD_VERSION: u64,
+    const OLD_BCS: usize,
+    const OLD_TXCS: usize,
+    const OLD_ARCS: usize,
+    const OLD_ADCS: usize,
+>(
+    root_path: PathBuf,
+    old_version: u64,
+    mut old_db: DbGeneric<OLD_VERSION, OLD_BCS, OLD_TXCS, OLD_ARCS, OLD_ADCS>,
+    mut out: impl io::Write,
+) -> eyre::Result<Db> {
+    let _ = writeln!(out, "upgrading db from version {old_version}");
+    assert!(
+        OLD_VERSION != LATEST_VERSION,
+        "LOGIC BUG: db is already at latest version"
+    );
+
+    let _ = writeln!(out, "running quick heal on old db");
+    let (issues, res) = old_db.heal(0);
+    for issue in issues {
+        let _ = writeln!(out, " > {issue}");
+    }
+    old_db.sync()?;
+    res?;
+    let _ = writeln!(out, "quick heal on old db complete");
+
+    let old_db = old_db; // make old db immutable
+
+    let _ = writeln!(out, "creating new db in temporary directory");
+    let new_path = tempfile::tempdir_in(root_path.parent().unwrap_or(Path::new("..")))?;
+    {
+        let mut new_db = Db::create(new_path.path().to_owned(), old_db.middle_slot, &mut out)?;
+        new_db.sync()?;
+    }
+
+    let _ = writeln!(out, "copying data from old db");
+    let (b_tx, b_rx) = std::sync::mpsc::sync_channel::<eyre::Result<Block>>(1024);
+    let (a_tx, a_rx) = std::sync::mpsc::sync_channel::<eyre::Result<Account>>(1024);
+
+    let putter_thread_handle = {
+        let new_path = new_path.path().to_owned();
+        std::thread::spawn(move || {
+            let mut new_db = Db::open_existing(new_path)?;
+
+            for block in b_rx {
+                let block = block.wrap_err("upgrade failed: failed to fetch block from old db")?;
+                new_db
+                    .push_block(block)
+                    .wrap_err("upgrade failed: failed to push block to new db")?;
+            }
+
+            for account in a_rx {
+                let account =
+                    account.wrap_err("upgrade failed: failed to fetch account from old db")?;
+                new_db
+                    .store_new_account(account)
+                    .wrap_err("upgrade failed: failed to store account in new db")?;
+            }
+
+            new_db.sync()?;
+            Ok::<_, eyre::Report>(())
+        })
+    };
+
+    for block in old_db.left_blocks().chain(old_db.right_blocks()) {
+        let Ok(_) = b_tx.send(block) else {
+            break; /* putter panicked */
+        };
+    }
+    std::mem::drop(b_tx);
+
+    for account_idx in 0..old_db.account_records.len().saturating_sub(1) {
+        let account = old_db.get_account_by_idx(account_idx);
+        let Ok(_) = a_tx.send(account) else {
+            break; /* putter panicked */
+        };
+    }
+    std::mem::drop(a_tx);
+
+    putter_thread_handle
+        .join()
+        .expect("upgrade failed: putter thread panicked")?;
+
+    let _ = writeln!(out, "data copied, ensuring new db checksum matches old db");
+    let new_checksum_handle = {
+        let new_path = new_path.path().to_owned();
+        std::thread::spawn(move || {
+            let new_db = Db::open_existing(new_path)?;
+            new_db.checksum()
+        })
+    };
+    let old_checksum = old_db.checksum()?;
+    let new_checksum = new_checksum_handle
+        .join()
+        .expect("checksum thread panicked")?;
+    eyre::ensure!(
+        old_checksum == new_checksum,
+        "checksum mismatch after upgrade: old {old_checksum:#X} != new {new_checksum:#X}"
+    );
+    let _ = writeln!(out, "checksum ok after migration!");
+
+    let _ = writeln!(
+        out,
+        "renaming old db to temporary path and new db to final path"
+    );
+    let old_path = root_path.with_extension(old_version.to_string());
+    std::fs::rename(&root_path, &old_path).wrap_err("failed to rename old DB to temporary path")?;
+    std::fs::rename(&new_path, &root_path).wrap_err("failed to rename new DB to final path")?;
+    std::mem::forget(new_path); // do not remove!
+
+    let _ = writeln!(out, "db moved to final path, removing old db");
+    std::fs::remove_dir_all(old_path).wrap_err("failed to remove old DB")?;
+
+    let _ = writeln!(out, "migration complete");
+    Db::open_existing(root_path)
+}
+
+pub struct DbGeneric<
+    const VERSION: u64,
+    const BCS: usize,
+    const TXCS: usize,
+    const ARCS: usize,
+    const ADCS: usize,
+> {
     middle_slot: u64,
 
     // blocks up to middle_slot
-    left: MonotonousBlockDb,
+    left: MonotonousBlockDb<BCS, TXCS>,
 
     // blocks ahead of middle_slot
-    right: MonotonousBlockDb,
+    right: MonotonousBlockDb<BCS, TXCS>,
 
-    account_records: HugeVec<AccountRecord, { chunk_sz::<AccountRecord>(128 * MB) }>,
-    account_data: HugeVec<u8, { chunk_sz::<u8>(256 * MB) }>,
+    account_records: HugeVec<AccountRecord, ARCS>,
+    account_data: HugeVec<u8, ADCS>,
     /*account_index: HugeMap<
         AccountID,
         u64,
@@ -65,48 +271,37 @@ pub struct DbSlotLimits {
     pub right_slot: Option<u64>,
 }
 
-impl Db {
-    pub fn open(
-        root_path: PathBuf,
-        default_middle_slot_getter: impl FnOnce() -> u64,
-        out: impl io::Write,
-    ) -> eyre::Result<Self> {
-        // create if not exists
-        match std::fs::read_dir(&root_path) {
-            Ok(_) => Self::open_existing(root_path, out),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                Self::initialize(root_path, default_middle_slot_getter(), out)
-            }
-            Err(_) => Err(eyre::eyre!(
-                "failed to open DB: {root_path:?} is not a directory"
-            )),
-        }
-    }
-
-    fn initialize(
-        root_path: PathBuf,
-        middle_slot: u64,
-        mut out: impl io::Write,
-    ) -> eyre::Result<Self> {
+impl<
+        const VERSION: u64,
+        const BCS: usize,
+        const TXCS: usize,
+        const ARCS: usize,
+        const ADCS: usize,
+    > DbGeneric<VERSION, BCS, TXCS, ARCS, ADCS>
+{
+    fn create(root_path: PathBuf, middle_slot: u64, mut out: impl io::Write) -> eyre::Result<Self> {
         // create root_path
         std::fs::create_dir_all(&root_path).wrap_err("failed to create root directory")?;
 
-        // write version file
-        let version_file = root_path.join("version");
-        std::fs::write(version_file, "1").wrap_err("failed to write version file")?;
-
         // write middle_slot
-        let middle_slot_file = root_path.join("middle_slot");
-        std::fs::write(middle_slot_file, middle_slot.to_string())
-            .wrap_err("failed to write middle_slot file")?;
+        let mut middle_slot_file = tempfile::NamedTempFile::new_in(&root_path)?;
+        write!(middle_slot_file, "{}", middle_slot).wrap_err("failed to write middle_slot file")?;
+        middle_slot_file.persist(root_path.join("middle_slot"))?;
+
+        // write version file
+        let mut version_file = tempfile::NamedTempFile::new_in(&root_path)?;
+        write!(version_file, "{}", VERSION).wrap_err("failed to write version file")?;
+        version_file.persist(root_path.join("version"))?;
 
         // create tables
-        let mut db = Self::open_or_create_raw(&root_path)?;
+        let mut db = Self::open_existing(&root_path)?;
         db.left.initialize()?;
         db.right.initialize()?;
 
-        // insert end cap
-        db.account_records.push(AccountRecord::endcap(0))?;
+        // insert accounts end cap
+        if db.account_records.is_empty() {
+            db.account_records.push(AccountRecord::endcap(0))?;
+        }
 
         if cfg!(debug_assertions) {
             let (issues, res) = db.heal(u64::MAX);
@@ -119,32 +314,7 @@ impl Db {
         Ok(db)
     }
 
-    fn open_existing(root_path: PathBuf, mut out: impl io::Write) -> eyre::Result<Self> {
-        let mut db = Self::open_or_create_raw(root_path)?;
-
-        let _ = writeln!(out, "Auto-healing DB...");
-        let (issues, res) = db.heal(128);
-        for issue in issues {
-            let _ = writeln!(out, " > {issue}");
-        }
-        res.wrap_err("Failed to auto-heal DB")?;
-        let _ = writeln!(out, "DB healed");
-
-        let _ = writeln!(
-            out,
-            "loaded {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
-            db.left.block_records.len() - 1,
-            db.right.block_records.len() - 1,
-            db.left.txs.len(),
-            db.right.txs.len(),
-            db.account_records.len() - 1,
-            db.account_data.len()
-        );
-
-        Ok(db)
-    }
-
-    fn open_or_create_raw(root_path: impl AsRef<Path>) -> eyre::Result<Self> {
+    fn open_existing(root_path: impl AsRef<Path>) -> eyre::Result<Self> {
         let root_path = root_path.as_ref();
 
         // open tables
@@ -183,15 +353,22 @@ impl Db {
         };
 
         // read middle slot
-        let middle_slot =
-            std::fs::read(root_path.join("middle_slot")).wrap_err("failed to read middle slot")?;
-        let middle_slot =
-            String::from_utf8(middle_slot).wrap_err("middle slot is not valid utf8")?;
-        let middle_slot = middle_slot
+        let middle_slot = std::fs::read_to_string(root_path.join("middle_slot"))
+            .wrap_err("failed to read middle slot")?
             .parse()
             .wrap_err("failed to parse middle slot")?;
 
-        let db = Db {
+        // check version
+        let version: u64 = std::fs::read_to_string(root_path.join("version"))
+            .wrap_err("failed to read version")?
+            .parse()
+            .wrap_err("failed to parse version")?;
+        eyre::ensure!(
+            version == VERSION,
+            "version mismatch: got {version} instead of {VERSION}"
+        );
+
+        let db = DbGeneric {
             middle_slot,
             left,
             right,
@@ -499,11 +676,11 @@ impl Db {
         Ok(())
     }
 
-    pub fn left_blocks(&self) -> std::iter::Rev<BlockIter<'_>> {
+    pub fn left_blocks(&self) -> std::iter::Rev<BlockIter<'_, BCS, TXCS>> {
         self.left.blocks().rev()
     }
 
-    pub fn right_blocks(&self) -> BlockIter<'_> {
+    pub fn right_blocks(&self) -> BlockIter<'_, BCS, TXCS> {
         self.right.blocks()
     }
 }

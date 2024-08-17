@@ -2,7 +2,7 @@ use std::iter::FusedIterator;
 
 use eyre::{eyre, WrapErr};
 
-use super::{chunk_sz, HugeVec, MB};
+use super::HugeVec;
 use crate::crc_checksum_serde::checksum;
 use crate::model::{Block, Tx};
 use crate::select_random_elements;
@@ -12,18 +12,19 @@ use model::BlockRecord;
 
 const MAX_AUTO_TX_LOSS: u64 = 16_384;
 
-pub struct MonotonousBlockDb {
-    pub(super) block_records: HugeVec<BlockRecord, { chunk_sz::<BlockRecord>(32 * MB) }>,
-    pub(super) txs: HugeVec<Tx, 2048>, // up to ~2.5MB per chunk ≃ up to 2.5GB mem usage
+pub struct MonotonousBlockDb<const BCS: usize, const TXCS: usize> {
+    pub(super) block_records: HugeVec<BlockRecord, BCS>,
+    pub(super) txs: HugeVec<Tx, TXCS>,
 }
 
-impl MonotonousBlockDb {
+impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
     pub fn initialize(&mut self) -> eyre::Result<()> {
-        eyre::ensure!(self.block_records.is_empty());
-        eyre::ensure!(self.txs.is_empty());
+        if self.block_records.is_empty() {
+            eyre::ensure!(self.txs.is_empty());
 
-        // insert endcap
-        self.block_records.push(BlockRecord::endcap(0))?;
+            // insert endcap
+            self.block_records.push(BlockRecord::endcap(0))?;
+        }
 
         Ok(())
     }
@@ -217,18 +218,18 @@ impl MonotonousBlockDb {
         Ok(block)
     }
 
-    pub fn blocks(&self) -> BlockIter<'_> {
+    pub fn blocks(&self) -> BlockIter<'_, BCS, TXCS> {
         BlockIter::new(self)
     }
 }
 
-pub struct BlockIter<'db> {
-    db: &'db MonotonousBlockDb,
+pub struct BlockIter<'db, const BCS: usize, const TXCS: usize> {
+    db: &'db MonotonousBlockDb<BCS, TXCS>,
     idx: u64,
     idx_back: u64,
 }
-impl<'db> BlockIter<'db> {
-    fn new(db: &'db MonotonousBlockDb) -> Self {
+impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
+    fn new(db: &'db MonotonousBlockDb<BCS, TXCS>) -> Self {
         Self {
             db,
             idx: 0,
@@ -237,7 +238,7 @@ impl<'db> BlockIter<'db> {
     }
 }
 
-impl<'db> Iterator for BlockIter<'db> {
+impl<'db, const BCS: usize, const TXCS: usize> Iterator for BlockIter<'db, BCS, TXCS> {
     type Item = eyre::Result<Block>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx >= self.db.block_records.len().saturating_sub(1) {
@@ -255,7 +256,7 @@ impl<'db> Iterator for BlockIter<'db> {
     }
 }
 
-impl<'db> DoubleEndedIterator for BlockIter<'db> {
+impl<'db, const BCS: usize, const TXCS: usize> DoubleEndedIterator for BlockIter<'db, BCS, TXCS> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.idx_back == 0 {
             None
@@ -266,10 +267,10 @@ impl<'db> DoubleEndedIterator for BlockIter<'db> {
     }
 }
 
-impl<'db> ExactSizeIterator for BlockIter<'db> {
+impl<'db, const BCS: usize, const TXCS: usize> ExactSizeIterator for BlockIter<'db, BCS, TXCS> {
     fn len(&self) -> usize {
         self.db.block_records.len().saturating_sub(1) as usize
     }
 }
 
-impl<'db> FusedIterator for BlockIter<'db> {}
+impl<'db, const BCS: usize, const TXCS: usize> FusedIterator for BlockIter<'db, BCS, TXCS> {}

@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    db::{Db, DbSlotLimits},
+    db::{self, Db, DbSlotLimits},
     model::{Account, AccountID, Block},
 };
 
@@ -31,7 +31,7 @@ pub fn spawn_db_actor(
     let handle = std::thread::Builder::new()
         .name("db".to_owned())
         .spawn(move || {
-            let db = Db::open(root_path, default_middle_slot_getter, std::io::stdout())?;
+            let db = db::open(root_path, default_middle_slot_getter, std::io::stdout())?;
             actor(db, rx)
         })
         .expect("failed to spawn db thread");

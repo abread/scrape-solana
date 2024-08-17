@@ -1,5 +1,5 @@
 use eyre::{eyre, Result, WrapErr};
-use scrape_solana::{actors, db::Db, solana_api::SolanaApi};
+use scrape_solana::{actors, db, solana_api::SolanaApi};
 use std::{fmt::Debug, path::PathBuf, str::FromStr, sync::Arc};
 
 use clap::Parser;
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
     };
 
     {
-        let db = Db::open(
+        let db = db::open(
             args.db_root_path.clone(),
             default_middle_slot_getter_builder(),
             std::io::stdout(),
