@@ -133,11 +133,11 @@ impl Db {
         let _ = writeln!(
             out,
             "loaded {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
-            db.left.block_records.len(),
-            db.right.block_records.len(),
+            db.left.block_records.len() - 1,
+            db.right.block_records.len() - 1,
             db.left.txs.len(),
             db.right.txs.len(),
-            db.account_records.len(),
+            db.account_records.len() - 1,
             db.account_data.len()
         );
 
