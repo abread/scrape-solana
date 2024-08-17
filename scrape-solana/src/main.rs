@@ -118,13 +118,13 @@ fn main() -> Result<()> {
     })
     .wrap_err("could not set Ctrl+C handler")?;
 
-    block_handler_handle
-        .join()
-        .expect("block handler panicked")?;
-    db_handle.join().expect("db actor panicked")?;
-    block_fetcher_handle
-        .join()
-        .expect("block fetcher panicked")?;
+    let bh_res = block_handler_handle.join();
+    let db_res = db_handle.join();
+    let bf_res = block_fetcher_handle.join();
+
+    bh_res.expect("block handler panicked")?;
+    bf_res.expect("block fetcher panicked")?;
+    db_res.expect("db actor panicked")?;
 
     println!("done");
     Ok(())
