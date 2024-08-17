@@ -446,6 +446,23 @@ impl Db {
         })
     }
 
+    pub fn checksum(&self) -> eyre::Result<u64> {
+        const CRC: crc::Crc<u64, crc::Table<1>> =
+            crc::Crc::<u64, crc::Table<1>>::new(&crc::CRC_64_GO_ISO);
+        let mut hasher = CRC.digest();
+        for block in self.left_blocks().chain(self.right_blocks()) {
+            let block = block?;
+            hasher.update(&checksum(&block).to_le_bytes());
+        }
+
+        for account_idx in 0..self.account_records.len().saturating_sub(1) {
+            let account = self.get_account_by_idx(account_idx)?;
+            hasher.update(&checksum(&account).to_le_bytes());
+        }
+
+        Ok(hasher.finalize())
+    }
+
     pub fn sync(&mut self) -> eyre::Result<()> {
         self.left.sync()?;
         self.right.sync()?;
