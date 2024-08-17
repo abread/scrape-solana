@@ -206,6 +206,14 @@ fn upgrade_db<
     std::mem::drop(b_tx);
 
     for account_idx in 0..old_db.account_records.len().saturating_sub(1) {
+        if old_db
+            .account_records
+            .get(account_idx)
+            .map(|r| r.is_endcap())
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let account = old_db.get_account_by_idx(account_idx);
         let _ = a_tx.send(account);
     }
@@ -680,6 +688,14 @@ impl<
         std::mem::drop(b_tx);
 
         for account_idx in 0..self.account_records.len().saturating_sub(1) {
+            if self
+                .account_records
+                .get(account_idx)
+                .map(|r| r.is_endcap())
+                .unwrap_or(false)
+            {
+                continue;
+            }
             a_tx.send(self.get_account_by_idx(account_idx))
                 .expect("checksum worker panicked?");
         }

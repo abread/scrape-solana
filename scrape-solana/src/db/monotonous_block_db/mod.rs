@@ -265,6 +265,17 @@ impl<'db, const BCS: usize, const TXCS: usize> Iterator for BlockIter<'db, BCS, 
         if self.idx >= self.db.block_records.len().saturating_sub(1) {
             None
         } else {
+            while self.idx < self.db.block_records.len().saturating_sub(1)
+                && self
+                    .db
+                    .block_records
+                    .get(self.idx)
+                    .map(|r| r.is_endcap())
+                    .unwrap_or(false)
+            {
+                self.idx += 1;
+            }
+
             let block = self.db.get_block(self.idx);
             self.idx += 1;
             Some(block)
@@ -283,7 +294,28 @@ impl<'db, const BCS: usize, const TXCS: usize> DoubleEndedIterator for BlockIter
             None
         } else {
             self.idx_back -= 1;
-            Some(self.db.get_block(self.idx_back))
+
+            while self.idx > 0
+                && self
+                    .db
+                    .block_records
+                    .get(self.idx)
+                    .map(|r| r.is_endcap())
+                    .unwrap_or(false)
+            {
+                self.idx -= 1;
+            }
+            if self
+                .db
+                .block_records
+                .get(self.idx)
+                .map(|r| r.is_endcap())
+                .unwrap_or(false)
+            {
+                None
+            } else {
+                Some(self.db.get_block(self.idx_back))
+            }
         }
     }
 }
