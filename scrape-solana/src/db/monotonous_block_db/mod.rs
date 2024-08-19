@@ -10,8 +10,6 @@ use crate::select_random_elements;
 mod model;
 use model::BlockRecord;
 
-const MAX_AUTO_TX_LOSS: u64 = 16_384;
-
 pub struct MonotonousBlockDb<const BCS: usize, const TXCS: usize> {
     pub(super) block_records: HugeVec<BlockRecord, BCS>,
     pub(super) txs: HugeVec<Tx, TXCS>,
@@ -27,6 +25,15 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         }
 
         Ok(())
+    }
+
+    const fn max_auto_tx_loss() -> u64 {
+        let two_block_chunks_of_txs = BCS as u64 * 2 * 4000;
+        if two_block_chunks_of_txs > TXCS as u64 {
+            two_block_chunks_of_txs + TXCS as u64
+        } else {
+            TXCS as u64
+        }
     }
 
     pub fn push(&mut self, block: &Block) -> eyre::Result<()> {
@@ -141,7 +148,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
                 }
             };
 
-            if n_bad_blocks >= MAX_AUTO_TX_LOSS || n_bad_txs >= MAX_AUTO_TX_LOSS {
+            if n_bad_blocks >= Self::max_auto_tx_loss() || n_bad_txs >= Self::max_auto_tx_loss() {
                 issues.push(format!("block records bad endcap: would drop {} blocks and {} txs to autofix (out of {} blocks and {} txs). aborting", n_bad_blocks, n_bad_txs, self.block_records.len(), self.txs.len()));
                 return Err(eyre!(
                     "block records missing endcap. too many dropped txs/blocks to autofix"

@@ -22,8 +22,6 @@ use monotonous_block_db::MonotonousBlockDb;
 
 use self::monotonous_block_db::BlockIter;
 
-const MAX_AUTO_ACCOUNT_DATA_LOSS: u64 = 2 * 1024 * 1024; // 2MiB
-
 pub(crate) type HugeVec<T, const CHUNK_SZ: usize> = crate::huge_vec::HugeVec<
     T,
     FsStore<crate::huge_vec::Chunk<T, CHUNK_SZ>, ZstdTransformer>,
@@ -295,6 +293,17 @@ impl<
         const ADCS: usize,
     > DbGeneric<VERSION, BCS, TXCS, ARCS, ADCS>
 {
+    const fn max_auto_account_data_loss() -> u64 {
+        let three_blocks = ADCS as u64 * 3;
+        let max_account_data = 10 * 1024 * 1024;
+
+        if three_blocks > max_account_data + ADCS as u64 {
+            three_blocks
+        } else {
+            max_account_data + ADCS as u64
+        }
+    }
+
     fn create(root_path: PathBuf, middle_slot: u64, mut out: impl io::Write) -> eyre::Result<Self> {
         // create root_path
         std::fs::create_dir_all(&root_path).wrap_err("failed to create root directory")?;
@@ -493,8 +502,8 @@ impl<
                 }
             };
 
-            if n_bad_accounts >= MAX_AUTO_ACCOUNT_DATA_LOSS
-                || n_bad_account_data_bytes >= MAX_AUTO_ACCOUNT_DATA_LOSS
+            if n_bad_accounts >= Self::max_auto_account_data_loss()
+                || n_bad_account_data_bytes >= Self::max_auto_account_data_loss()
             {
                 issues.push(format!("account records bad endcap: would drop {} accounts and {} bytes of data to autofix (out of {} accounts and {} account data bytes). aborting", n_bad_accounts, n_bad_account_data_bytes, self.account_records.len(), self.account_data.len()));
                 return Err(eyre!(
