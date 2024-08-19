@@ -12,7 +12,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+const MAX_SLEEP: Duration = Duration::from_secs(10);
+
 const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
+
 const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
     encoding: None,
     transaction_details: None,
@@ -40,8 +43,6 @@ pub enum Error {
     #[error("A previous request timed out and the cooldown period has not yet expired.")]
     PostTimeoutCooldown,
 }
-
-const MAX_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl SolanaApi {
     pub fn new(endpoint_url: String) -> Self {
@@ -100,9 +101,9 @@ impl SolanaApiInner {
     ) -> Result<R, Error> {
         let elapsed = self.last_access.elapsed();
         let to_sleep = self.wait.saturating_sub(elapsed);
-        if to_sleep > MAX_TIMEOUT {
+        if to_sleep > MAX_SLEEP {
             // break the sleep into chunks to avoid stalling tasks for too long
-            std::thread::sleep(MAX_TIMEOUT);
+            std::thread::sleep(MAX_SLEEP);
             return Err(Error::PostTimeoutCooldown);
         } else if !Duration::is_zero(&to_sleep) {
             std::thread::sleep(to_sleep);
@@ -161,7 +162,7 @@ impl SolanaApiInner {
                 self.wait *= 2;
 
                 // this is a really bad one, we need to wait a big while
-                std::thread::sleep(self.wait.max(Duration::from_secs(30)));
+                std::thread::sleep(self.wait.max(MAX_SLEEP));
                 Err(Error::Timeout(e))
             }
             Err(
@@ -183,7 +184,7 @@ impl SolanaApiInner {
                 self.wait *= 2;
 
                 // this might be a really bad one, we need to wait a big while
-                std::thread::sleep(self.wait.max(Duration::from_secs(30)));
+                std::thread::sleep(self.wait.max(MAX_SLEEP));
                 Err(Error::Timeout(e))
             }
         };
