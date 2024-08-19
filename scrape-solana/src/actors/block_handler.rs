@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eyre::WrapErr;
+use eyre::{eyre, WrapErr};
 use solana_transaction_status::UiConfirmedBlock;
 
 use crate::{
@@ -89,6 +89,12 @@ fn block_handler_actor(
     should_stop.store(true, Ordering::Relaxed);
     std::mem::drop(account_fetcher_tx);
 
+    // sync db before exit to avoid losing data (when exiting faster than other components)
+    db_tx
+        .send(DbOperation::Sync)
+        .map_err(|_| eyre!("db closed"))?;
+
+    // wait for account fetcher to exit passing its status to the main thread
     account_fetcher_handle
         .join()
         .expect("account fetcher panicked")?;
@@ -169,6 +175,11 @@ fn account_fetcher_actor(
             break;
         }
     }
+
+    // sync db before exit to avoid losing data (when exiting faster than other components)
+    db_tx
+        .send(DbOperation::Sync)
+        .map_err(|_| eyre!("db closed"))?;
 
     Ok(())
 }

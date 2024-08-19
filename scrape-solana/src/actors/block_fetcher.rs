@@ -90,7 +90,14 @@ fn block_fetcher_actor(
                 eprintln!("timeout fetching block at slot {slot} ({side_str} side): {e}");
                 continue;
             }
-            Err(solana_api::Error::PostTimeoutCooldown) => continue, // not really a timeout, just continuing the previous timeout
+            Err(solana_api::Error::PostTimeoutCooldown) => {
+                // not really a timeout, just continuing the previous timeout
+                // but it's so large that we might as well sync the db while we wait
+                db_tx
+                    .send(DbOperation::Sync)
+                    .map_err(|_| eyre!("db closed"))?;
+                continue;
+            }
             Err(solana_api::Error::SolanaClient(e)) => {
                 return Err(e).wrap_err("failed to fetch block");
             }
