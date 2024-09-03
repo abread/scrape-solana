@@ -6,16 +6,30 @@ use clap::Parser;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 
-#[derive(clap::Parser, Clone)]
+#[derive(clap::Parser)]
 #[command(name = "scape-solana", version, about, long_about = None)]
 struct App {
-    /// Database file path
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    #[command(flatten)]
+    scrape_args: ScrapeArgs,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    Scrape(ScrapeArgs),
+}
+
+#[derive(clap::Args)]
+struct ScrapeArgs {
+    /// Database path
     #[arg(short = 'r', long, default_value = "solana_data_db")]
     db_root_path: PathBuf,
 
     /// Solana API Endpoint (can be mainnet-beta, devnet, testnet or the URL for another endpoint)
     #[arg(short = 'u', long, default_value = "devnet")]
-    endpoint_url: String,
+    endpoint_url: SolanaEndpoint,
 
     /// Sharded fetching (format: N:id where id is between 0 and N-1). Node id fetches blocks where blocknum % N = id
     #[arg(short, long, default_value = "1:0")]
@@ -27,6 +41,9 @@ struct App {
 }
 
 #[derive(Clone, Debug)]
+struct SolanaEndpoint(String);
+
+#[derive(Clone, Copy, Debug)]
 struct ShardConfig {
     n: u64,
     id: u64,
@@ -34,20 +51,17 @@ struct ShardConfig {
 
 fn main() -> Result<()> {
     let args = App::parse();
+    let command = args.command.unwrap_or(Command::Scrape(args.scrape_args));
 
-    let endpoint_url = match args.endpoint_url.as_ref() {
-        "devnet" => "https://api.devnet.solana.com",
-        "testnet" => "https://api.testnet.solana.com",
-        "mainnet-beta" => "https://api.mainnet-beta.solana.com",
-        x => x,
+    match command {
+        Command::Scrape(scrape_args) => scrape(scrape_args),
     }
-    .to_owned();
+}
 
+fn scrape(args: ScrapeArgs) -> Result<()> {
     let default_middle_slot_getter_builder = {
-        let args = args.clone();
-        let endpoint_url = endpoint_url.to_owned();
+        let endpoint_url = args.endpoint_url.to_owned();
         move || {
-            let args = args.clone();
             let endpoint_url = endpoint_url.to_owned();
             move || {
                 println!("fetching latest block slot");
@@ -97,7 +111,7 @@ fn main() -> Result<()> {
         }
     }
 
-    let api = Arc::new(SolanaApi::new(endpoint_url.to_owned()));
+    let api = Arc::new(SolanaApi::new(args.endpoint_url));
     let (db_tx, db_handle) =
         actors::spawn_db_actor(args.db_root_path, default_middle_slot_getter_builder());
     let (block_handler_tx, block_handler_handle) =
@@ -153,5 +167,25 @@ impl FromStr for ShardConfig {
         } else {
             Ok(ShardConfig { n, id })
         }
+    }
+}
+
+impl FromStr for SolanaEndpoint {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(SolanaEndpoint(
+            match s {
+                "devnet" => "https://api.devnet.solana.com",
+                "testnet" => "https://api.testnet.solana.com",
+                "mainnet-beta" => "https://api.mainnet-beta.solana.com",
+                x => x,
+            }
+            .to_owned(),
+        ))
+    }
+}
+impl std::fmt::Display for SolanaEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
     }
 }

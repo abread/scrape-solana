@@ -45,7 +45,7 @@ pub enum Error {
 }
 
 impl SolanaApi {
-    pub fn new(endpoint_url: String) -> Self {
+    pub fn new(endpoint_url: impl ToString) -> Self {
         let client = RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
 
         SolanaApi(Mutex::new(SolanaApiInner {
