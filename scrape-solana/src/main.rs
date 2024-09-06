@@ -5,7 +5,13 @@ use scrape_solana::{
     db::{self, DbStats},
     solana_api::SolanaApi,
 };
-use std::{collections::HashSet, fmt::Debug, path::PathBuf, str::FromStr, sync::Arc};
+use std::{
+    collections::HashSet,
+    fmt::Debug,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::{mpsc::sync_channel, Arc},
+};
 
 use clap::Parser;
 use solana_client::rpc_client::RpcClient;
@@ -23,8 +29,12 @@ struct App {
 
 #[derive(clap::Subcommand)]
 enum Command {
+    /// Scrape Solana blockchain
     Scrape(ScrapeArgs),
+    /// Display statistic on one or more Solana databases
     Stats(StatsArgs),
+    /// Fully heal a corrupted database fetching any missing blocks/txs.
+    FullHeal(ScrapeArgs),
 }
 
 #[derive(clap::Args)]
@@ -69,6 +79,7 @@ fn main() -> Result<()> {
     match command {
         Command::Scrape(scrape_args) => scrape(scrape_args),
         Command::Stats(stats_args) => stats(stats_args),
+        Command::FullHeal(args) => full_heal(args),
     }
 }
 
@@ -226,6 +237,72 @@ fn stats(args: StatsArgs) -> eyre::Result<()> {
     }
     println!("================================================================================");
     println!("Global DB stats: {global_stats:#?}");
+
+    Ok(())
+}
+
+fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
+    let old_db = db::open(args.db_root_path.clone(), std::io::stdout())?;
+    let middle_slot = old_db.slot_limits()?.middle_slot;
+
+    println!("creating new db in temporary directory");
+    let new_path = tempfile::tempdir_in(args.db_root_path.parent().unwrap_or(Path::new("..")))?;
+    {
+        let mut new_db = db::open_or_create(
+            new_path.path().to_owned(),
+            || middle_slot,
+            std::io::stdout(),
+        )?;
+        new_db.sync()?;
+    }
+
+    println!("copying data from old db where possible, filling in the gaps from the network");
+
+    let api = Arc::new(SolanaApi::new(args.endpoint_url.clone()));
+    let (db_tx, db_handle) =
+        actors::spawn_db_actor(new_path.path().to_owned(), move || middle_slot);
+    let (_, block_handler_tx, block_handler_handle, block_converter_handle) =
+        actors::spawn_block_handler(Arc::clone(&api), db_tx.clone());
+    let (healer_tx, healer_handle) = actors::spawn_db_full_healer(
+        args.db_root_path.clone(),
+        args.shard_config.n,
+        api,
+        block_handler_tx,
+        db_tx,
+    );
+
+    ctrlc::set_handler(move || {
+        println!("received stop signal");
+        healer_tx
+            .send(actors::DBFullHealerOperation::Cancel)
+            .expect("could not send stop signal to healer");
+    })
+    .wrap_err("could not set Ctrl+C handler")?;
+
+    let bc_res = block_converter_handle.join();
+    let bh_res = block_handler_handle.join();
+    let db_res = db_handle.join();
+    let h_res = healer_handle.join();
+
+    bc_res.expect("block converter panicked")?;
+    bh_res.expect("block handler panicked")?;
+    h_res.expect("healer panicked")?;
+    db_res.expect("db actor panicked")?;
+
+    println!("done copying data");
+
+    println!("renaming old db to temp path and new db to final path");
+    let old_path = args.db_root_path.as_path().with_extension(".old");
+    std::fs::rename(&args.db_root_path, &old_path)
+        .wrap_err("failed to rename old DB to temporary path")?;
+    std::fs::rename(&new_path, &args.db_root_path)
+        .wrap_err("failed to rename new DB to final path")?;
+    std::mem::forget(new_path); // do not remove!
+
+    println!("db moved to final path, removing old db");
+    std::fs::remove_dir_all(old_path).wrap_err("failed to remove old DB")?;
+
+    println!("heal complete!");
 
     Ok(())
 }

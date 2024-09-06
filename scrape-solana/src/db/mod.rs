@@ -18,7 +18,7 @@ use model::AccountRecord;
 //use huge_map::MapFsStore;
 
 mod monotonous_block_db;
-use monotonous_block_db::MonotonousBlockDb;
+pub use monotonous_block_db::MonotonousBlockDb;
 
 use self::monotonous_block_db::BlockIter;
 
@@ -30,13 +30,15 @@ pub(crate) type HugeVec<T, const CHUNK_SZ: usize> = crate::huge_vec::HugeVec<
 /*pub(crate) type HugeMap<K, V, const CHUNK_SZ: usize> =
 huge_map::HugeMap<K, V, MapFsStore<ZstdTransformer>, CHUNK_SZ>;*/
 
-struct DbParams {
-    block_rec_cs: usize,
-    tx_cs: usize,
-    account_rec_cs: usize,
-    account_data_cs: usize,
+#[derive(Clone, Copy)]
+// copy is a hack here
+pub struct DbParams {
+    pub block_rec_cs: usize,
+    pub tx_cs: usize,
+    pub account_rec_cs: usize,
+    pub account_data_cs: usize,
 }
-const DB_PARAMS: [DbParams; 3] = [
+const DB_PARAMS_BY_VERSION: [DbParams; 3] = [
     DbParams {
         block_rec_cs: 699,
         tx_cs: 2048,
@@ -61,17 +63,18 @@ macro_rules! db_version {
     ($name:ident, $v:literal) => {
         pub type $name = DbGeneric<
             $v,
-            { DB_PARAMS[$v].block_rec_cs },
-            { DB_PARAMS[$v].tx_cs },
-            { DB_PARAMS[$v].account_rec_cs },
-            { DB_PARAMS[$v].account_data_cs },
+            { DB_PARAMS_BY_VERSION[$v].block_rec_cs },
+            { DB_PARAMS_BY_VERSION[$v].tx_cs },
+            { DB_PARAMS_BY_VERSION[$v].account_rec_cs },
+            { DB_PARAMS_BY_VERSION[$v].account_data_cs },
         >;
     };
 }
 db_version!(DbV1, 1);
 db_version!(DbV2, 2);
 
-pub const LATEST_VERSION: u64 = 2;
+pub const LATEST_VERSION: u64 = DB_PARAMS_BY_VERSION.len() as u64 - 1;
+pub const DB_PARAMS: DbParams = DB_PARAMS_BY_VERSION[LATEST_VERSION as usize];
 pub type Db = DbV2;
 
 pub fn open(root_path: PathBuf, out: impl io::Write) -> eyre::Result<Db> {
@@ -676,6 +679,10 @@ impl<
         Ok(())
     }
 
+    pub fn accounts(&self) -> AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS> {
+        AccountIter::new(self)
+    }
+
     pub fn slot_limits(&self) -> eyre::Result<DbSlotLimits> {
         Ok(DbSlotLimits {
             middle_slot: self.middle_slot,
@@ -830,6 +837,16 @@ impl<
             problems,
         }
     }
+
+    pub fn split(
+        self,
+    ) -> (
+        MonotonousBlockDb<BCS, TXCS>,
+        u64,
+        MonotonousBlockDb<BCS, TXCS>,
+    ) {
+        (self.left, self.middle_slot, self.right)
+    }
 }
 
 #[derive(Debug)]
@@ -862,4 +879,136 @@ pub struct DbStats {
     pub right_missing_blocks: u64,
 
     pub problems: Vec<String>,
+}
+
+pub struct AccountIter<
+    'db,
+    const VERSION: u64,
+    const BCS: usize,
+    const TXCS: usize,
+    const ARCS: usize,
+    const ADCS: usize,
+> {
+    db: &'db DbGeneric<VERSION, BCS, TXCS, ARCS, ADCS>,
+    idx: u64,
+    idx_back: u64,
+}
+impl<
+        'db,
+        const VERSION: u64,
+        const BCS: usize,
+        const TXCS: usize,
+        const ARCS: usize,
+        const ADCS: usize,
+    > AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+{
+    fn new(db: &'db DbGeneric<VERSION, BCS, TXCS, ARCS, ADCS>) -> Self {
+        Self {
+            db,
+            idx: 0,
+            idx_back: db.account_records.len().saturating_sub(1),
+        }
+    }
+}
+
+impl<
+        'db,
+        const VERSION: u64,
+        const BCS: usize,
+        const TXCS: usize,
+        const ARCS: usize,
+        const ADCS: usize,
+    > Iterator for AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+{
+    type Item = eyre::Result<Account>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx >= self.db.account_records.len().saturating_sub(1) {
+            None
+        } else {
+            while self.idx < self.db.account_records.len().saturating_sub(1)
+                && self
+                    .db
+                    .account_records
+                    .get(self.idx)
+                    .map(|r| r.is_endcap())
+                    .unwrap_or(false)
+            {
+                self.idx += 1;
+            }
+
+            let account = self.db.get_account_by_idx(self.idx);
+            self.idx += 1;
+            Some(account)
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.db.account_records.len().saturating_sub(2) as usize;
+        (len, Some(len))
+    }
+}
+
+impl<
+        'db,
+        const VERSION: u64,
+        const BCS: usize,
+        const TXCS: usize,
+        const ARCS: usize,
+        const ADCS: usize,
+    > DoubleEndedIterator for AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.idx_back == 0 {
+            None
+        } else {
+            self.idx_back -= 1;
+
+            while self.idx > 0
+                && self
+                    .db
+                    .account_records
+                    .get(self.idx)
+                    .map(|r| r.is_endcap())
+                    .unwrap_or(false)
+            {
+                self.idx -= 1;
+            }
+            if self
+                .db
+                .account_records
+                .get(self.idx)
+                .map(|r| r.is_endcap())
+                .unwrap_or(false)
+            {
+                None
+            } else {
+                Some(self.db.get_account_by_idx(self.idx_back))
+            }
+        }
+    }
+}
+
+impl<
+        'db,
+        const VERSION: u64,
+        const BCS: usize,
+        const TXCS: usize,
+        const ARCS: usize,
+        const ADCS: usize,
+    > ExactSizeIterator for AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+{
+    fn len(&self) -> usize {
+        self.db.account_records.len().saturating_sub(1) as usize
+    }
+}
+
+impl<
+        'db,
+        const VERSION: u64,
+        const BCS: usize,
+        const TXCS: usize,
+        const ARCS: usize,
+        const ADCS: usize,
+    > std::iter::FusedIterator for AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+{
 }

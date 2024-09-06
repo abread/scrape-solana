@@ -867,6 +867,14 @@ mod chunk_cache {
     }
 }
 
+// Safety:
+// HugeVec uses non-Send types internally but all references to them bounded by the lifetime of the HugeVec
+// thus they may be sent to other threads safely.
+unsafe impl<T: Debug, Store: IndexedStorage<Chunk<T, CHUNK_SZ>>, const CHUNK_SZ: usize> Send
+    for HugeVec<T, Store, CHUNK_SZ>
+{
+}
+
 #[cfg(test)]
 mod test {
     use std::io;
