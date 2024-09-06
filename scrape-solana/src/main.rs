@@ -126,7 +126,7 @@ fn scrape(args: ScrapeArgs) -> Result<()> {
     let api = Arc::new(SolanaApi::new(args.endpoint_url.clone()));
     let (db_tx, db_handle) =
         actors::spawn_db_actor(args.db_root_path, default_middle_slot_getter_builder());
-    let (block_handler_tx, block_handler_handle) =
+    let (block_handler_tx, _, block_handler_handle, block_converter_handle) =
         actors::spawn_block_handler(Arc::clone(&api), db_tx.clone());
     let (block_fetcher_tx, block_fetcher_handle) = actors::spawn_block_fetcher(
         args.forward_fetch_chance,
@@ -144,10 +144,12 @@ fn scrape(args: ScrapeArgs) -> Result<()> {
     })
     .wrap_err("could not set Ctrl+C handler")?;
 
+    let bc_res = block_converter_handle.join();
     let bh_res = block_handler_handle.join();
     let db_res = db_handle.join();
     let bf_res = block_fetcher_handle.join();
 
+    bc_res.expect("block converter panicked")?;
     bh_res.expect("block handler panicked")?;
     bf_res.expect("block fetcher panicked")?;
     db_res.expect("db actor panicked")?;

@@ -18,23 +18,52 @@ use crate::{
 
 use super::db::DbOperation;
 
+type BlockHandlerSpawnReturn = (
+    SyncSender<(u64, UiConfirmedBlock)>,
+    SyncSender<Block>,
+    std::thread::JoinHandle<eyre::Result<()>>,
+    std::thread::JoinHandle<eyre::Result<()>>,
+);
+
 pub fn spawn_block_handler(
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
-) -> (
-    SyncSender<(u64, UiConfirmedBlock)>,
-    std::thread::JoinHandle<eyre::Result<()>>,
-) {
+) -> BlockHandlerSpawnReturn {
     let (tx, rx) = std::sync::mpsc::sync_channel(128);
-    let handle = std::thread::Builder::new()
+    let handler_handle = std::thread::Builder::new()
         .name("block handler".to_owned())
         .spawn(move || block_handler_actor(rx, api, db_tx))
         .expect("failed to spawn block handler thread");
-    (tx, handle)
+
+    let (sdk_tx, sdk_rx) = std::sync::mpsc::sync_channel(128);
+    let converter_tx = tx.clone();
+    let converter_handle = std::thread::Builder::new()
+        .name("block converter".to_owned())
+        .spawn(move || block_converter_actor(sdk_rx, converter_tx))
+        .expect("failed to spawn block converter thread");
+
+    (sdk_tx, tx, handler_handle, converter_handle)
+}
+
+fn block_converter_actor(
+    rx: Receiver<(u64, UiConfirmedBlock)>,
+    tx: SyncSender<Block>,
+) -> eyre::Result<()> {
+    println!("block converter ready");
+    while let Ok((slot, block)) = rx.recv() {
+        let block = Block::from_solana_sdk(slot, block)?;
+
+        if tx.send(block).is_err() {
+            println!("block converter: handler stopped. terminating");
+            break;
+        }
+    }
+
+    Ok(())
 }
 
 fn block_handler_actor(
-    rx: Receiver<(u64, UiConfirmedBlock)>,
+    rx: Receiver<Block>,
     api: Arc<SolanaApi>,
     db_tx: SyncSender<DbOperation>,
 ) -> eyre::Result<()> {
@@ -53,9 +82,7 @@ fn block_handler_actor(
     let mut last_sync = Instant::now();
 
     println!("block handler ready");
-    while let Ok((slot, block)) = rx.recv() {
-        let block = Block::from_solana_sdk(slot, block)?;
-
+    while let Ok(block) = rx.recv() {
         let account_ids = block
             .txs
             .iter()
