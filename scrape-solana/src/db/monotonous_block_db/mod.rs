@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::iter::FusedIterator;
 
 use eyre::{eyre, WrapErr};
@@ -249,6 +250,122 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
     pub fn blocks(&self) -> BlockIter<'_, BCS, TXCS> {
         BlockIter::new(self)
     }
+
+    fn guess_shard_config(&self, problems: &mut Vec<String>) -> Option<(u64, u64)> {
+        let mut height_diffs = HashMap::new();
+
+        let mut last_height = self
+            .block_records
+            .iter()
+            .rev()
+            .skip(1)
+            .rev()
+            .map(|b| b.height)
+            .next()
+            .unwrap_or(0);
+        for block_record in self.block_records.iter().skip(1).rev().skip(1).rev() {
+            let counter = height_diffs
+                .entry((block_record.height as i128 - last_height as i128).unsigned_abs() as u64)
+                .or_insert(0);
+            *counter += 1;
+            last_height = block_record.height;
+        }
+
+        if let Some(n) = height_diffs
+            .iter()
+            .max_by_key(|(_, count)| **count)
+            .map(|(n, _)| n)
+            .copied()
+        {
+            for (other_n, count) in height_diffs {
+                if other_n % n != 0 {
+                    problems.push(format!("inconsistent height difference: {other_n} (present {count} times) is not a multiple of {n}"));
+                }
+            }
+
+            let mut residues = HashMap::new();
+            for block_record in self.block_records.iter().skip(1) {
+                let residue = block_record.height % n;
+                let counter = residues.entry(residue).or_insert(0);
+                *counter += 1;
+            }
+
+            let i = residues
+                .iter()
+                .max_by_key(|(_, count)| **count)
+                .map(|(i, _)| *i)
+                .unwrap();
+            if residues.len() > 1 {
+                for (other_i, count) in residues {
+                    if other_i != i {
+                        problems.push(format!("inconsistent shard id: {other_i} (present {count} times) is not equal to {i}"));
+                    }
+                }
+            }
+
+            Some((n, i))
+        } else {
+            None
+        }
+    }
+
+    pub fn stats(&self) -> BlockDbStats {
+        let mut problems = Vec::new();
+
+        let shard_config = self.guess_shard_config(&mut problems);
+
+        let mut n_txs_corrupted = 0;
+        let mut n_rec_corrupted = 0;
+        let mut n_missing = 0;
+        let mut last_height = self
+            .block_records
+            .iter()
+            .map(|b| b.height)
+            .next()
+            .unwrap_or(0);
+        let expected_height_diff = shard_config.map(|s| s.0).unwrap_or(u64::MAX);
+        for idx in 0..self.block_records.len() - 1 {
+            match self.block_records.get(idx) {
+                Ok(block_record) => {
+                    if (block_record.height as i128 - last_height as i128).unsigned_abs() as u64
+                        > expected_height_diff
+                    {
+                        n_missing += 1;
+                    }
+                    last_height = block_record.height;
+                }
+                Err(_) => {
+                    // no need to call get_block
+                    n_rec_corrupted += 1;
+                    continue;
+                }
+            }
+
+            if self.get_block(idx).is_err() {
+                n_txs_corrupted += 1;
+            }
+        }
+
+        BlockDbStats {
+            shard_config,
+            n_blocks: self.block_records.len(),
+            n_txs: self.txs.len(),
+            n_rec_corrupted,
+            n_txs_corrupted,
+            n_missing,
+            problems,
+        }
+    }
+}
+
+pub struct BlockDbStats {
+    pub shard_config: Option<(u64, u64)>,
+    pub n_blocks: u64,
+    pub n_txs: u64,
+    pub n_rec_corrupted: u64,
+    pub n_txs_corrupted: u64,
+    pub n_missing: u64,
+    pub problems: Vec<String>,
 }
 
 pub struct BlockIter<'db, const BCS: usize, const TXCS: usize> {

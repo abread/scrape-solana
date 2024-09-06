@@ -74,10 +74,20 @@ db_version!(DbV2, 2);
 pub const LATEST_VERSION: u64 = 2;
 pub type Db = DbV2;
 
-pub fn open(
+pub fn open(root_path: PathBuf, out: impl io::Write) -> eyre::Result<Db> {
+    let version: u64 = match std::fs::read_to_string(root_path.join("version")) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(e),
+    }?
+    .parse()?;
+
+    open_existing(root_path, version, out)
+}
+
+pub fn open_or_create(
     root_path: PathBuf,
     default_middle_slot_getter: impl FnOnce() -> u64,
-    mut out: impl io::Write,
+    out: impl io::Write,
 ) -> eyre::Result<Db> {
     let version: u64 = match std::fs::read_to_string(root_path.join("version")) {
         Ok(v) => Ok(v),
@@ -88,6 +98,10 @@ pub fn open(
     }?
     .parse()?;
 
+    open_existing(root_path, version, out)
+}
+
+fn open_existing(root_path: PathBuf, version: u64, mut out: impl io::Write) -> eyre::Result<Db> {
     let mut db = match version {
         1 => {
             let old_db = DbV1::open_existing(root_path.clone())?;
@@ -738,4 +752,114 @@ impl<
     pub fn right_blocks(&self) -> BlockIter<'_, BCS, TXCS> {
         self.right.blocks()
     }
+
+    pub fn blocks(
+        &self,
+    ) -> std::iter::Chain<std::iter::Rev<BlockIter<'_, BCS, TXCS>>, BlockIter<'_, BCS, TXCS>> {
+        self.left_blocks().chain(self.right_blocks())
+    }
+
+    pub fn stats(&self) -> DbStats {
+        let left_stats = self.left.stats();
+        let mut right_stats = self.right.stats();
+
+        let mut problems = left_stats.problems;
+        problems.append(&mut right_stats.problems);
+
+        let (guessed_shard_n, guessed_shard_i) =
+            match (left_stats.shard_config, right_stats.shard_config) {
+                (Some(l), Some(r)) if l == r => (Some(l.0), Some(l.1)),
+                (Some(l), None) => (Some(l.0), Some(l.1)),
+                (None, Some(r)) => (Some(r.0), Some(r.1)),
+                (None, None) => (None, None),
+                (Some(l), Some(r)) => {
+                    problems.push(format!(
+                    "left and right block dbs have different guessed shard configs: {l:?} != {r:?}"
+                ));
+                    (Some(l.0), Some(l.1))
+                }
+            };
+
+        let ts_range = {
+            let all_blocks = || {
+                self.left
+                    .block_records
+                    .iter()
+                    .rev()
+                    .chain(self.right.block_records.iter())
+            };
+            let first_ts = all_blocks()
+                .find_map(|b| b.ts)
+                .map(|ts| chrono::DateTime::from_timestamp(ts, 0).expect("invalid ts"));
+            let last_ts = all_blocks()
+                .rev()
+                .find_map(|b| b.ts)
+                .map(|ts| chrono::DateTime::from_timestamp(ts, 0).expect("invalid ts"));
+
+            first_ts.zip(last_ts)
+        };
+
+        DbStats {
+            version: VERSION,
+            bcs: BCS,
+            txcs: TXCS,
+            arcs: ARCS,
+            adcs: ADCS,
+
+            middle_height: self.middle_slot,
+            guessed_shard_n,
+            guessed_shard_i,
+
+            accounts_count: self.account_records.len(),
+            account_data_bytes: self.account_data.len(),
+
+            ts_range,
+
+            left_blocks_count: left_stats.n_blocks,
+            left_txs_count: left_stats.n_txs,
+            left_corrupted_block_recs: left_stats.n_rec_corrupted,
+            left_corrupted_txs: left_stats.n_txs_corrupted,
+            left_missing_blocks: left_stats.n_missing,
+
+            right_blocks_count: right_stats.n_blocks,
+            right_txs_count: right_stats.n_txs,
+            right_corrupted_block_recs: right_stats.n_rec_corrupted,
+            right_corrupted_txs: right_stats.n_txs_corrupted,
+            right_missing_blocks: right_stats.n_missing,
+
+            problems,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DbStats {
+    pub version: u64,
+    pub bcs: usize,
+    pub txcs: usize,
+    pub arcs: usize,
+    pub adcs: usize,
+
+    pub middle_height: u64,
+    pub guessed_shard_n: Option<u64>,
+    pub guessed_shard_i: Option<u64>,
+
+    pub ts_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+
+    pub accounts_count: u64,
+    pub account_data_bytes: u64,
+
+    pub left_blocks_count: u64,
+    pub left_txs_count: u64,
+    pub left_corrupted_block_recs: u64,
+    pub left_corrupted_txs: u64,
+    pub left_missing_blocks: u64,
+
+    pub right_blocks_count: u64,
+    pub right_txs_count: u64,
+    pub right_corrupted_block_recs: u64,
+    pub right_corrupted_txs: u64,
+    pub right_missing_blocks: u64,
+
+    pub problems: Vec<String>,
 }

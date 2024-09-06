@@ -2935,6 +2935,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "bs58",
+ "chrono",
  "clap 4.5.7",
  "color-eyre",
  "crc",
@@ -2943,6 +2944,7 @@ dependencies = [
  "nonmax",
  "rand 0.8.5",
  "rand_xorshift 0.3.0",
+ "rayon",
  "serde",
  "solana-client",
  "solana-sdk",
