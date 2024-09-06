@@ -73,37 +73,35 @@ fn main() -> Result<()> {
 }
 
 fn scrape(args: ScrapeArgs) -> Result<()> {
-    let default_middle_slot_getter_builder = {
+    let default_middle_slot_getter_builder = || {
         let endpoint_url = args.endpoint_url.to_owned();
+        let shard_config = args.shard_config;
         move || {
-            let endpoint_url = endpoint_url.to_owned();
-            move || {
-                println!("fetching latest block slot");
-                let client =
-                    RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
-                let slot = client
-                    .get_epoch_info()
-                    .expect("failed to get latest block slot")
-                    .absolute_slot;
+            println!("fetching latest block slot");
+            let client =
+                RpcClient::new_with_commitment(endpoint_url, CommitmentConfig::finalized());
+            let slot = client
+                .get_epoch_info()
+                .expect("failed to get latest block slot")
+                .absolute_slot;
 
-                let slot = slot - 100; // avoid fetching the latest block, start a bit behind
+            let slot = slot - 100; // avoid fetching the latest block, start a bit behind
 
-                let slot_shard = slot % args.shard_config.n;
-                let slot = if slot_shard != args.shard_config.id {
-                    slot.saturating_sub(slot_shard + args.shard_config.n - args.shard_config.id)
-                } else {
-                    slot
-                };
-
-                assert!(
-                    slot % args.shard_config.n == args.shard_config.id,
-                    "faulty shard adjustment. expected shard id {}, got {}",
-                    args.shard_config.id,
-                    slot % args.shard_config.n
-                );
-
+            let slot_shard = slot % shard_config.n;
+            let slot = if slot_shard != shard_config.id {
+                slot.saturating_sub(slot_shard + shard_config.n - shard_config.id)
+            } else {
                 slot
-            }
+            };
+
+            assert!(
+                slot % shard_config.n == shard_config.id,
+                "faulty shard adjustment. expected shard id {}, got {}",
+                shard_config.id,
+                slot % shard_config.n
+            );
+
+            slot
         }
     };
 
@@ -125,7 +123,7 @@ fn scrape(args: ScrapeArgs) -> Result<()> {
         }
     }
 
-    let api = Arc::new(SolanaApi::new(args.endpoint_url));
+    let api = Arc::new(SolanaApi::new(args.endpoint_url.clone()));
     let (db_tx, db_handle) =
         actors::spawn_db_actor(args.db_root_path, default_middle_slot_getter_builder());
     let (block_handler_tx, block_handler_handle) =
@@ -232,7 +230,7 @@ fn stats(args: StatsArgs) -> eyre::Result<()> {
 
 impl FromStr for ShardConfig {
     type Err = eyre::Error;
-    fn from_str(s: &str) -> eyre::Result<Self> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (n, id) = s
             .split_once(':')
             .ok_or_else(|| eyre!("shard config missing delimiter ':'"))?;
