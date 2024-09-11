@@ -9,6 +9,7 @@ use std::{
 mod chunk;
 mod chunk_cache;
 mod io_transformer;
+mod prefetch_storage;
 mod storage;
 
 pub use chunk::Chunk;
@@ -20,8 +21,8 @@ pub(crate) const CHUNK_CACHE_RECLAMATION_INTERVAL: usize = 32;
 
 pub struct HugeVec<T, Store, const CHUNK_SZ: usize = 4096>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     chunk_cache: RefCell<ChunkCache<T, Store, CHUNK_SZ>>, // TODO: left-right(?)
     len: u64,
@@ -38,8 +39,8 @@ pub enum HugeVecError<StoreErr> {
 
 impl<T, Store, const CHUNK_SZ: usize> HugeVec<T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     pub fn new(chunk_storage: Store) -> Result<Self, HugeVecError<Store::Error>> {
         let mut chunk_cache = ChunkCache::new(chunk_storage)?;
@@ -193,8 +194,8 @@ where
 
 impl<'r, T, Store, const CHUNK_SZ: usize> IntoIterator for &'r HugeVec<T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     type Item = ItemRef<'r, T, T, CHUNK_SZ>;
     type IntoIter = HugeVecIter<'r, T, Store, CHUNK_SZ>;
@@ -298,8 +299,8 @@ where
 
 pub struct HugeVecIter<'v, T, Store, const CHUNK_SZ: usize>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     vec: &'v HugeVec<T, Store, CHUNK_SZ>,
     len: u64,
@@ -308,8 +309,8 @@ where
 
 impl<'v, T, Store, const CHUNK_SZ: usize> HugeVecIter<'v, T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     fn new(vec: &'v HugeVec<T, Store, CHUNK_SZ>) -> Self {
         Self {
@@ -322,8 +323,8 @@ where
 
 impl<'v, T, Store, const CHUNK_SZ: usize> Iterator for HugeVecIter<'v, T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     type Item = ItemRef<'v, T, T, CHUNK_SZ>;
 
@@ -345,23 +346,23 @@ where
 
 impl<'v, T, Store, const CHUNK_SZ: usize> FusedIterator for HugeVecIter<'v, T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
 }
 
 impl<'v, T, Store, const CHUNK_SZ: usize> ExactSizeIterator for HugeVecIter<'v, T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
 }
 
 impl<'v, T, Store, const CHUNK_SZ: usize> DoubleEndedIterator
     for HugeVecIter<'v, T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.idx == self.len || self.len == 0 {
@@ -376,8 +377,8 @@ where
 
 pub struct HugeVecSliceMut<'s, T, Store, const CHUNK_SZ: usize>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     chunk_cache: &'s RefCell<ChunkCache<T, Store, CHUNK_SZ>>,
     offset: u64,
@@ -386,8 +387,8 @@ where
 
 impl<'s, T, Store, const CHUNK_SZ: usize> HugeVecSliceMut<'s, T, Store, CHUNK_SZ>
 where
-    T: Debug + 's,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     pub fn get<'r>(
         &'r self,
@@ -466,8 +467,8 @@ where
 impl<'s, T, Store, const CHUNK_SZ: usize> vector_trees::VectorSlice<'s, T>
     for HugeVecSliceMut<'s, T, Store, CHUNK_SZ>
 where
-    T: Debug + 's,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     type Ref<'r> = ItemRef<'r, T, T, CHUNK_SZ> where 's: 'r;
 
@@ -487,8 +488,8 @@ where
 impl<'s, T, Store, const CHUNK_SZ: usize> vector_trees::VectorSliceMut<'s, T>
     for HugeVecSliceMut<'s, T, Store, CHUNK_SZ>
 where
-    T: Debug + 's,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     type RefMut<'r> = ItemRefMut<'r, T, T, CHUNK_SZ> where 's: 'r;
 
@@ -541,13 +542,15 @@ pub struct HugeVecSlice<'s, T, Store, const CHUNK_SZ: usize>(
     HugeVecSliceMut<'s, T, Store, CHUNK_SZ>,
 )
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>;
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static;
 
 impl<'s, T, Store, const CHUNK_SZ: usize> Deref for HugeVecSlice<'s, T, Store, CHUNK_SZ>
 where
     T: Debug + 's,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     type Target = HugeVecSliceMut<'s, T, Store, CHUNK_SZ>;
 
@@ -557,8 +560,8 @@ where
 }
 impl<'s, T, Store, const CHUNK_SZ: usize> HugeVecSlice<'s, T, Store, CHUNK_SZ>
 where
-    T: Debug + 's,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     pub fn map_get(
         self,
@@ -575,8 +578,8 @@ where
 impl<'s, T, Store, const CHUNK_SZ: usize> vector_trees::VectorSlice<'s, T>
     for HugeVecSlice<'s, T, Store, CHUNK_SZ>
 where
-    T: Debug + 's,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     type Ref<'r> = ItemRef<'r, T, T, CHUNK_SZ> where 's: 'r;
 
@@ -603,8 +606,8 @@ where
 
 impl<T, Store, const CHUNK_SZ: usize> vector_trees::Vector<T> for HugeVec<T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     type Slice<'s> = HugeVecSlice<'s, T, Store, CHUNK_SZ> where T: 's, Self: 's;
     type SliceMut<'s> = HugeVecSliceMut<'s, T, Store, CHUNK_SZ> where T: 's, Self: 's;
@@ -629,8 +632,10 @@ where
 // Safety:
 // HugeVec uses non-Send types internally but all references to them bounded by the lifetime of the HugeVec
 // thus they may be sent to other threads safely.
-unsafe impl<T: Debug, Store: IndexedStorage<Chunk<T, CHUNK_SZ>>, const CHUNK_SZ: usize> Send
-    for HugeVec<T, Store, CHUNK_SZ>
+unsafe impl<T, Store, const CHUNK_SZ: usize> Send for HugeVec<T, Store, CHUNK_SZ>
+where
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
 }
 
@@ -639,6 +644,7 @@ mod test {
     use std::io;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
+    use std::sync::Arc;
 
     use crate::huge_vec::FsStore;
     use crate::huge_vec::IOTransformer;
@@ -764,7 +770,7 @@ mod test {
         struct Recorder {
             writebacks: AtomicU64,
         }
-        impl IOTransformer for &Recorder {
+        impl IOTransformer for Arc<Recorder> {
             type Error = io::Error;
             type Reader<R> = R where R: io::BufRead;
             type Writer<W> = W where W: io::Write;
@@ -793,10 +799,10 @@ mod test {
             }
         }
 
-        let recorder = Recorder {
+        let recorder = Arc::new(Recorder {
             writebacks: AtomicU64::new(0),
-        };
-        let fs_store = FsStore::open(&dir, &recorder).unwrap();
+        });
+        let fs_store = FsStore::open(&dir, Arc::clone(&recorder)).unwrap();
         let mut vec = HugeVec::<u8, _, 4>::new(fs_store).unwrap();
 
         for _ in 0..(CHUNK_CACHE_RECLAMATION_INTERVAL * 4 * 3) {

@@ -1,11 +1,9 @@
-use std::{
-    cell::RefCell,
-    collections::{btree_map::Entry, BTreeMap},
-    fmt::Debug,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::BTreeMap, fmt::Debug, rc::Rc};
 
-use super::{Chunk, IndexedStorage, CHUNK_CACHE_RECLAMATION_INTERVAL};
+use super::{
+    prefetch_storage::{FetchReq, PrefetchableStore},
+    Chunk, IndexedStorage, CHUNK_CACHE_RECLAMATION_INTERVAL,
+};
 use std::{
     borrow::Borrow,
     ops::{Deref, DerefMut},
@@ -14,22 +12,27 @@ use std::{
 type CacheEntry<T, const CHUNK_SZ: usize> = (Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>, u64);
 pub(crate) struct ChunkCache<T, Store, const CHUNK_SZ: usize>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
-    chunk_store: Store,
+    chunk_store: PrefetchableStore<Chunk<T, CHUNK_SZ>, Store>,
     cached_chunks: BTreeMap<usize, CacheEntry<T, CHUNK_SZ>>,
     chunk_count: usize,
     clock: u64,
 }
 
+const READAHEAD_COUNT: usize = 8;
+
 impl<T, Store, const CHUNK_SZ: usize> ChunkCache<T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     pub(crate) fn new(chunk_store: Store) -> Result<Self, Store::Error> {
         let chunk_count = chunk_store.len()?;
+        let chunk_store = PrefetchableStore::new(chunk_store, READAHEAD_COUNT)
+            .expect("failed to create prefetchable store");
+
         Ok(Self {
             chunk_store,
             cached_chunks: BTreeMap::new(),
@@ -59,22 +62,34 @@ where
             return Ok(cached_chunk);
         }
 
-        // get existing chunk
-        let cached_chunk = match self.cached_chunks.entry(chunk_idx) {
-            Entry::Occupied(mut o) => {
+        self.cached_chunks
+            .get_mut(&chunk_idx)
+            .map(|(chunk, last_access)| {
                 // cached chunk found, update use time for GC and return it
-                o.get_mut().1 = use_time;
-                Rc::clone(&o.into_mut().0)
-            }
-            Entry::Vacant(v) => {
+                *last_access = use_time;
+                Ok(Rc::clone(chunk))
+            })
+            .unwrap_or_else(|| {
                 // not cached: load into cache and return it
-                let chunk = self.chunk_store.load(chunk_idx)?;
-                let cached_chunk = Rc::new(RefCell::new(CachedChunk::new(chunk)));
-                Rc::clone(&v.insert((cached_chunk, use_time)).0)
-            }
-        };
+                let (prefetched_chunks, chunk) = self.chunk_store.load(chunk_idx);
+                self.store_prefetched_chunks(prefetched_chunks);
+                let chunk = chunk?;
 
-        Ok(cached_chunk)
+                let cached_chunk = Rc::new(RefCell::new(CachedChunk::new(chunk)));
+                self.cached_chunks
+                    .insert(chunk_idx, (Rc::clone(&cached_chunk), use_time));
+
+                // request prefetch of next chunks
+                for chunk_idx in (chunk_idx + 1..)
+                    .take(READAHEAD_COUNT)
+                    .filter(|&idx| idx < self.chunk_count)
+                    .filter(|idx| !self.cached_chunks.contains_key(idx))
+                {
+                    self.chunk_store.prefetch(chunk_idx);
+                }
+
+                Ok(cached_chunk)
+            })
     }
 
     pub(crate) fn clear(&mut self) -> Result<(), Store::Error> {
@@ -110,14 +125,26 @@ where
     }
 
     pub(crate) fn sync(&mut self) -> Result<(), Store::Error> {
-        for (id, (cached_chunk, _)) in self.cached_chunks.iter() {
-            let mut c = cached_chunk.borrow_mut();
-            if c.is_dirty() {
-                c.clean_dirty_with(|chunk| self.chunk_store.store(*id, chunk))?;
-            }
+        // fast path that avoids locking
+        if self
+            .cached_chunks
+            .iter()
+            .filter(|(_, (cached_chunk, _))| RefCell::borrow(cached_chunk).is_dirty())
+            .count()
+            == 0
+        {
+            return Ok(());
         }
 
-        Ok(())
+        self.chunk_store.with_inner_mut(|chunk_store| {
+            for (id, (cached_chunk, _)) in self.cached_chunks.iter() {
+                let mut c = cached_chunk.borrow_mut();
+                if c.is_dirty() {
+                    c.clean_dirty_with(|chunk| chunk_store.store(*id, chunk))?;
+                }
+            }
+            Ok(())
+        })
     }
 
     fn writeback_oldest_dirty(&mut self) -> Result<(), Store::Error> {
@@ -133,9 +160,10 @@ where
             })
             .min_by_key(|(_, (_, last_used))| *last_used)
         {
-            oldest_dirty
-                .borrow_mut()
-                .clean_dirty_with(|chunk| self.chunk_store.store(*chunk_idx, chunk))?;
+            oldest_dirty.borrow_mut().clean_dirty_with(|chunk| {
+                // we write the chunk but it remains cached, so prefetching cannot overwrite it with stale data
+                self.chunk_store.store_no_invalidate(*chunk_idx, chunk)
+            })?;
         }
 
         Ok(())
@@ -155,16 +183,37 @@ where
             .sort_unstable_by(|(_, a_last_used), (_, b_last_used)| b_last_used.cmp(a_last_used));
 
         let max_removed = removable_chunks.len() / 2;
+        let mut removed_chunks = false;
         for chunk_idx in removable_chunks
             .into_iter()
             .map(|(idx, _)| idx)
             .take(max_removed)
         {
             let removed = self.cached_chunks.remove(&chunk_idx);
+            removed_chunks = true;
             debug_assert!(!Rc::try_unwrap(removed.unwrap().0)
                 .unwrap()
                 .into_inner()
                 .is_dirty());
+        }
+
+        if removed_chunks {
+            // writeback_oldest_dirty does not invalidate fetches because chunks are kept in cache
+            // we removed chunks so this is no longer true: we must invalidate potentially stale prefetches
+            self.chunk_store.invalidate_prefetches();
+        }
+    }
+
+    fn store_prefetched_chunks(&mut self, chunks: Vec<(FetchReq, Chunk<T, CHUNK_SZ>)>) {
+        const PREFETCH_CLOCK_PENALTY: u64 = 1;
+        let prefetch_chunk_time = self.clock.saturating_sub(PREFETCH_CLOCK_PENALTY);
+        for (req, chunk) in chunks {
+            self.cached_chunks.entry(req.object_idx).or_insert_with(|| {
+                (
+                    Rc::new(RefCell::new(CachedChunk::new(chunk))),
+                    prefetch_chunk_time,
+                )
+            });
         }
     }
 
@@ -177,8 +226,8 @@ where
 
 impl<T, Store, const CHUNK_SZ: usize> Drop for ChunkCache<T, Store, CHUNK_SZ>
 where
-    T: Debug,
-    Store: IndexedStorage<Chunk<T, CHUNK_SZ>>,
+    T: Debug + Send + 'static,
+    Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         self.sync().expect("failed to sync on drop");

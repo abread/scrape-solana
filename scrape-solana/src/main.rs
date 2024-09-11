@@ -10,7 +10,7 @@ use std::{
     fmt::Debug,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{mpsc::sync_channel, Arc},
+    sync::Arc,
 };
 
 use clap::Parser;

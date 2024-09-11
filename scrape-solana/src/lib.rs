@@ -51,8 +51,8 @@ impl<T> Collection<T> for Vec<T> {
 
 impl<T, Store, const CHUNK_SZ: usize> Collection<T> for huge_vec::HugeVec<T, Store, CHUNK_SZ>
 where
-    T: std::fmt::Debug,
-    Store: huge_vec::IndexedStorage<huge_vec::Chunk<T, CHUNK_SZ>>,
+    T: std::fmt::Debug + Send + 'static,
+    Store: huge_vec::IndexedStorage<huge_vec::Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
     type Iter<'s> = huge_vec::HugeVecIter<'s, T, Store, CHUNK_SZ> where T: 's, Self: 's;
 
