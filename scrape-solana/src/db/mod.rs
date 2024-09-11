@@ -115,7 +115,7 @@ fn open_existing(root_path: PathBuf, version: u64, mut out: impl io::Write) -> e
     }?;
 
     let _ = writeln!(out, "Auto-healing DB...");
-    let (issues, res) = db.heal(128);
+    let (issues, res) = db.heal(0);
     for issue in issues {
         let _ = writeln!(out, " > {issue}");
     }
