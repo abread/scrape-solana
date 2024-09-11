@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::mpsc::sync_channel;
 
 use eyre::{eyre, WrapErr};
 
@@ -169,7 +170,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         if n_samples == u64::MAX {
             // check ALL blocks
             for idx in 0..endcap_idx {
-                self.check_block(idx, issues)?;
+                self.heal_check_block(idx, issues)?;
             }
         } else {
             let elements_to_check = select_random_elements(&self.block_records, n_samples)
@@ -178,13 +179,13 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
                 .collect::<Vec<_>>();
 
             for idx in elements_to_check {
-                self.check_block(idx as u64, issues)?;
+                self.heal_check_block(idx as u64, issues)?;
             }
         }
 
         if self.block_records.len() >= 2
             && self
-                .check_block(self.block_records.len() - 1, &mut Vec::new())
+                .heal_check_block(self.block_records.len() - 1, &mut Vec::new())
                 .is_err()
         {
             issues.push("last block is corrupted: removing".to_owned());
@@ -199,8 +200,11 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         Ok(())
     }
 
-    fn check_block(&self, idx: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
-        match self.get_block(idx) {
+    fn heal_check_block(&self, idx: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
+        match self
+            .get_block_unchecked(idx)
+            .and_then(|(block_rec, txs)| check_rebuild_block(block_rec, txs))
+        {
             Ok(_) => (),
             Err(e) => {
                 issues.push(format!("block {} is corrupted: {}", idx, e));
@@ -210,7 +214,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         Ok(())
     }
 
-    fn get_block(&self, idx: u64) -> eyre::Result<Block> {
+    fn get_block_unchecked(&self, idx: u64) -> eyre::Result<(BlockRecord, Vec<Tx>)> {
         let record = self
             .block_records
             .get(idx)
@@ -238,15 +242,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
             txs
         };
 
-        let block = Block {
-            slot: record.slot,
-            height: record.height,
-            ts: record.ts,
-            txs,
-        };
-        eyre::ensure!(checksum(&block) == record.checksum, "checksum mismatch");
-
-        Ok(block)
+        Ok((record.to_owned(), txs))
     }
 
     pub fn blocks(&self) -> BlockIter<'_, BCS, TXCS> {
@@ -316,6 +312,20 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
 
         let shard_config = self.guess_shard_config(&mut problems);
 
+        let (checksum_res_tx, checksum_res_rx) =
+            sync_channel::<bool>(4 * rayon::current_num_threads());
+        let checksum_agg_handle = std::thread::Builder::new()
+            .spawn(move || {
+                let mut bad_count = 0u64;
+                while let Ok(res) = checksum_res_rx.recv() {
+                    if !res {
+                        bad_count += 1;
+                    }
+                }
+                bad_count
+            })
+            .expect("failed to spawn checksum result aggregator");
+
         let mut n_txs_corrupted = 0;
         let mut n_rec_corrupted = 0;
         let mut n_missing = 0;
@@ -327,26 +337,34 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
             .unwrap_or(0);
         let expected_height_diff = shard_config.map(|s| s.0).unwrap_or(u64::MAX);
         for idx in 0..self.block_records.len() - 1 {
-            match self.block_records.get(idx) {
-                Ok(block_record) => {
+            match self.get_block_unchecked(idx) {
+                Ok((block_record, txs)) => {
                     if (block_record.height as i128 - last_height as i128).unsigned_abs() as u64
                         > expected_height_diff
                     {
                         n_missing += 1;
                     }
                     last_height = block_record.height;
+
+                    // compute checksum
+                    let checksum_res_tx = checksum_res_tx.clone();
+                    rayon::spawn(move || {
+                        let res = check_rebuild_block(block_record, txs).is_ok();
+                        checksum_res_tx
+                            .send(res)
+                            .expect("checksum aggregator panicked");
+                    })
                 }
                 Err(_) => {
                     // no need to call get_block
                     n_rec_corrupted += 1;
-                    continue;
                 }
             }
-
-            if self.get_block(idx).is_err() {
-                n_txs_corrupted += 1;
-            }
         }
+        std::mem::drop(checksum_res_tx);
+        n_txs_corrupted += checksum_agg_handle
+            .join()
+            .expect("checksum aggregator panicked");
 
         BlockDbStats {
             shard_config,
@@ -358,6 +376,19 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
             problems,
         }
     }
+}
+
+fn check_rebuild_block(block_rec: BlockRecord, txs: Vec<Tx>) -> eyre::Result<Block> {
+    let block = Block {
+        slot: block_rec.slot,
+        height: block_rec.height,
+        ts: block_rec.ts,
+        txs,
+    };
+
+    eyre::ensure!(checksum(&block) == block_rec.checksum, "checksum mismatch");
+
+    Ok(block)
 }
 
 pub struct BlockDbStats {
