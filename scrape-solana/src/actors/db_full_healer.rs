@@ -186,7 +186,7 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
     for slot_chunk in slots.chunks(db::DB_PARAMS.block_rec_cs).into_iter() {
         handle_cancelled!();
 
-        for slot in slot_chunk {
+        'filler_loop: for slot in slot_chunk {
             let block = if stored_blocks.peek().map(|b| b.slot) == Some(slot) {
                 stored_blocks.next().unwrap()
             } else {
@@ -198,7 +198,9 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
                             break Block::from_solana_sdk(slot, block)
                                 .map_err(|e| eyre!("failed to convert block: {e}"))?;
                         }
-                        Ok(None) => {}
+                        Ok(None) => {
+                            continue 'filler_loop; // skip this slot, still (forever(?)) missing
+                        }
                         Err(solana_api::Error::Timeout(e)) => {
                             eprintln!("timeout fetching block at slot {slot}: {e}");
                             continue;
