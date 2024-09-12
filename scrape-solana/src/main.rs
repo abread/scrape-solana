@@ -230,7 +230,7 @@ fn quickstats(args: StatsArgs) -> eyre::Result<()> {
                 ts_end_max: stats.ts_end,
             }),
             Err((p, e)) => {
-                println!("error opening db {p:?}: {e:?}");
+                println!("error opening db {p:?}: {e:#?}");
                 None
             }
         })
@@ -255,7 +255,7 @@ fn quickstats(args: StatsArgs) -> eyre::Result<()> {
                 .or(b.ts_end_max),
         });
 
-    println!("{:?}", db_stats);
+    println!("{:#?}", db_stats);
 
     Ok(())
 }
