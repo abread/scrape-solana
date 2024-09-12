@@ -139,6 +139,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
                     .iter()
                     .enumerate()
                     .rev()
+                    .filter_map(|(idx, maybe_br)| maybe_br.ok().map(|br| (idx, br)))
                     .find(|(_, block_rec)| block_rec.txs_start_idx <= self.txs.len());
 
                 if let Some((idx, block_rec)) = new_endcap_idx {
@@ -175,11 +176,11 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         } else {
             let elements_to_check = select_random_elements(&self.block_records, n_samples)
                 .map(|(idx, _)| idx)
-                .filter(|&idx| idx as u64 != endcap_idx)
+                .filter(|&idx| idx != endcap_idx)
                 .collect::<Vec<_>>();
 
             for idx in elements_to_check {
-                self.heal_check_block(idx as u64, issues)?;
+                self.heal_check_block(idx, issues)?;
             }
         }
 
@@ -258,10 +259,18 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
             .rev()
             .skip(1)
             .rev()
-            .map(|b| b.height)
+            .filter_map(|maybe_b| maybe_b.ok().map(|b| b.height))
             .next()
             .unwrap_or(0);
-        for block_record in self.block_records.iter().skip(1).rev().skip(1).rev() {
+        for block_record in self
+            .block_records
+            .iter()
+            .skip(1)
+            .rev()
+            .skip(1)
+            .rev()
+            .filter_map(|maybe_br| maybe_br.ok())
+        {
             let counter = height_diffs
                 .entry((block_record.height as i128 - last_height as i128).unsigned_abs() as u64)
                 .or_insert(0);
@@ -282,7 +291,12 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
             }
 
             let mut residues = HashMap::new();
-            for block_record in self.block_records.iter().skip(1) {
+            for block_record in self
+                .block_records
+                .iter()
+                .skip(1)
+                .filter_map(|maybe_br| maybe_br.ok())
+            {
                 let residue = block_record.height % n;
                 let counter = residues.entry(residue).or_insert(0);
                 *counter += 1;
@@ -332,7 +346,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         let mut last_height = self
             .block_records
             .iter()
-            .map(|b| b.height)
+            .filter_map(|maybe_br| maybe_br.ok().map(|br| br.height))
             .next()
             .unwrap_or(0);
         let expected_height_diff = shard_config.map(|s| s.0).unwrap_or(u64::MAX);

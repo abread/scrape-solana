@@ -197,7 +197,7 @@ where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
-    type Item = ItemRef<'r, T, T, CHUNK_SZ>;
+    type Item = Result<ItemRef<'r, T, T, CHUNK_SZ>, HugeVecError<Store::Error>>;
     type IntoIter = HugeVecIter<'r, T, Store, CHUNK_SZ>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -326,14 +326,14 @@ where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
-    type Item = ItemRef<'v, T, T, CHUNK_SZ>;
+    type Item = Result<ItemRef<'v, T, T, CHUNK_SZ>, HugeVecError<Store::Error>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx >= self.len {
             return None;
         }
 
-        let res = self.vec.get(self.idx).unwrap();
+        let res = self.vec.get(self.idx);
         self.idx += 1;
         Some(res)
     }
@@ -369,7 +369,7 @@ where
             return None;
         }
 
-        let res = self.vec.get(self.len - 1).unwrap();
+        let res = self.vec.get(self.len - 1);
         self.len -= 1;
         Some(res)
     }
@@ -729,7 +729,10 @@ mod test {
 
             let mut vec = vec_opener();
             assert_eq!(
-                vec.iter().map(|i| *i).collect::<Vec<_>>(),
+                vec.iter()
+                    .map(|ri| ri.map(|i| *i))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap(),
                 (0..=(prev_len - 1) as u8).collect::<Vec<_>>()
             );
             vec.truncate(((offset + 1) * 10 + offset) as u64).unwrap();
@@ -738,7 +741,10 @@ mod test {
         {
             let mut vec = vec_opener();
             assert_eq!(
-                vec.iter().map(|i| *i).collect::<Vec<_>>(),
+                vec.iter()
+                    .map(|ri| ri.map(|i| *i))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap(),
                 (0..10u8).collect::<Vec<_>>()
             );
 

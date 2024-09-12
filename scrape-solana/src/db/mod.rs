@@ -505,6 +505,7 @@ impl<
                     .iter()
                     .enumerate()
                     .rev()
+                    .filter_map(|(idx, maybe_ar)| maybe_ar.ok().map(|ar| (idx, ar)))
                     .find(|(_, account_rec)| account_rec.data_start_idx <= self.account_data.len());
 
                 if let Some((idx, account_rec)) = new_endcap_idx {
@@ -544,11 +545,11 @@ impl<
         } else {
             let elements_to_check = select_random_elements(&self.account_records, n_samples)
                 .map(|(idx, _)| idx)
-                .filter(|&idx| idx as u64 != endcap_idx)
+                .filter(|&idx| idx != endcap_idx)
                 .collect::<Vec<_>>();
 
             for idx in elements_to_check {
-                self.check_account(idx as u64, issues)?;
+                self.check_account(idx, issues)?;
             }
         }
 
@@ -636,6 +637,7 @@ impl<
     pub fn has_account(&self, id: &AccountID) -> bool {
         self.account_records
             .iter()
+            .filter_map(|maybe_ar| maybe_ar.ok())
             .any(|r| r.id == *id && !r.is_endcap())
     }
 
@@ -796,11 +798,13 @@ impl<
                     .chain(self.right.block_records.iter())
             };
             let first_ts = all_blocks()
-                .find_map(|b| b.ts)
+                .filter_map(|maybe_br| maybe_br.ok())
+                .find_map(|br| br.ts)
                 .map(|ts| chrono::DateTime::from_timestamp(ts, 0).expect("invalid ts"));
             let last_ts = all_blocks()
                 .rev()
-                .find_map(|b| b.ts)
+                .filter_map(|maybe_br| maybe_br.ok())
+                .find_map(|br| br.ts)
                 .map(|ts| chrono::DateTime::from_timestamp(ts, 0).expect("invalid ts"));
 
             first_ts.zip(last_ts)
