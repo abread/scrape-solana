@@ -52,11 +52,18 @@ where
                 std::thread::Builder::new()
                     .name(format!("storfetcher-{i}"))
                     .spawn(move || {
-                        while let Ok(req) = fetch_req_rx
-                            .lock()
-                            .expect("req channel rx lock poisoned")
-                            .recv()
-                        {
+                        loop {
+                            let req = {
+                                match fetch_req_rx
+                                    .lock()
+                                    .expect("req channel rx lock poisoned")
+                                    .recv()
+                                {
+                                    Ok(req) => req,
+                                    Err(_) => break,
+                                }
+                            };
+
                             let object = {
                                 let store = store.read().expect("store lock poisoned");
                                 store.load(req.object_idx)
