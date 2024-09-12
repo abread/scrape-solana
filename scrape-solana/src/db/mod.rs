@@ -768,9 +768,13 @@ impl<
         self.left_blocks().chain(self.right_blocks())
     }
 
-    pub fn stats(&self) -> DbStats {
-        let left_stats = self.left.stats();
-        let mut right_stats = self.right.stats();
+    pub fn stats(&mut self) -> DbStats {
+        // &MonotonousBlockDb isn't Send, so we need to create mut references to each side to process
+        // them in parallel without borrowing issues.
+        let left = &mut self.left;
+        let right = &mut self.right;
+        let (left_stats, mut right_stats) =
+            rayon::join(move || left.stats(), move || right.stats());
 
         let mut problems = left_stats.problems;
         problems.append(&mut right_stats.problems);

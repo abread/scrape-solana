@@ -178,7 +178,7 @@ fn stats(args: StatsArgs) -> eyre::Result<()> {
         .into_par_iter()
         .map(|p| {
             let maybe_db = db::open(p.clone(), std::io::stdout());
-            (p, maybe_db.map(|db| db.stats()))
+            (p, maybe_db.map(|mut db| db.stats()))
         })
         .collect();
 
