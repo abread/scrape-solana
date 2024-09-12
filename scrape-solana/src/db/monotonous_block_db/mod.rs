@@ -251,15 +251,15 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
     }
 
     fn guess_shard_config(&self, problems: &mut Vec<String>) -> Option<(u64, u64)> {
-        let mut height_diffs = HashMap::new();
+        let mut slot_diffs = HashMap::new();
 
-        let mut last_height = self
+        let mut last_slot = self
             .block_records
             .iter()
             .rev()
             .skip(1)
             .rev()
-            .filter_map(|maybe_b| maybe_b.ok().map(|b| b.height))
+            .filter_map(|maybe_b| maybe_b.ok().map(|b| b.slot))
             .next()
             .unwrap_or(0);
         for block_record in self
@@ -271,22 +271,22 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
             .rev()
             .filter_map(|maybe_br| maybe_br.ok())
         {
-            let counter = height_diffs
-                .entry((block_record.height as i128 - last_height as i128).unsigned_abs() as u64)
+            let counter = slot_diffs
+                .entry((block_record.slot as i128 - last_slot as i128).unsigned_abs() as u64)
                 .or_insert(0);
             *counter += 1;
-            last_height = block_record.height;
+            last_slot = block_record.slot;
         }
 
-        if let Some(n) = height_diffs
+        if let Some(n) = slot_diffs
             .iter()
             .max_by_key(|(_, count)| **count)
             .map(|(n, _)| n)
             .copied()
         {
-            for (other_n, count) in height_diffs {
+            for (other_n, count) in slot_diffs {
                 if other_n % n != 0 {
-                    problems.push(format!("inconsistent height difference: {other_n} (present {count} times) is not a multiple of {n}"));
+                    problems.push(format!("inconsistent slot difference: {other_n} (present {count} times) is not a multiple of {n}"));
                 }
             }
 
@@ -297,7 +297,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
                 .skip(1)
                 .filter_map(|maybe_br| maybe_br.ok())
             {
-                let residue = block_record.height % n;
+                let residue = block_record.slot % n;
                 let counter = residues.entry(residue).or_insert(0);
                 *counter += 1;
             }
@@ -343,22 +343,22 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         let mut n_txs_corrupted = 0;
         let mut n_rec_corrupted = 0;
         let mut n_missing = 0;
-        let mut last_height = self
+        let mut last_slot = self
             .block_records
             .iter()
-            .filter_map(|maybe_br| maybe_br.ok().map(|br| br.height))
+            .filter_map(|maybe_br| maybe_br.ok().map(|br| br.slot))
             .next()
             .unwrap_or(0);
-        let expected_height_diff = shard_config.map(|s| s.0).unwrap_or(u64::MAX);
+        let expected_slot_diff = shard_config.map(|s| s.0).unwrap_or(1);
         for idx in 0..self.block_records.len() - 1 {
             match self.get_block_unchecked(idx) {
                 Ok((block_record, txs)) => {
-                    if (block_record.height as i128 - last_height as i128).unsigned_abs() as u64
-                        > expected_height_diff
+                    if (block_record.slot as i128 - last_slot as i128).unsigned_abs() as u64
+                        > expected_slot_diff
                     {
                         n_missing += 1;
                     }
-                    last_height = block_record.height;
+                    last_slot = block_record.slot;
 
                     // compute checksum
                     let checksum_res_tx = checksum_res_tx.clone();
