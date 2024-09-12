@@ -831,6 +831,14 @@ impl<
         }
     }
 
+    pub fn block_count(&self) -> u64 {
+        (self.left.block_records.len() + self.right.block_records.len()).saturating_sub(2)
+    }
+
+    pub fn tx_count(&self) -> u64 {
+        self.left.txs.len() + self.right.txs.len()
+    }
+
     pub fn split(
         self,
     ) -> (

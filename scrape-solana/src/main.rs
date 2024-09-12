@@ -33,6 +33,8 @@ enum Command {
     Scrape(ScrapeArgs),
     /// Display statistic on one or more Solana databases
     Stats(StatsArgs),
+    /// Display fast-computed stats on one or more Solana databases
+    QuickStats(StatsArgs),
     /// Fully heal a corrupted database fetching any missing blocks/txs.
     FullHeal(ScrapeArgs),
     /// Compute a checksum summarizing all data in one or more Solana DBs
@@ -81,6 +83,7 @@ fn main() -> Result<()> {
     match command {
         Command::Scrape(scrape_args) => scrape(scrape_args),
         Command::Stats(stats_args) => stats(stats_args),
+        Command::QuickStats(stats_args) => quickstats(stats_args),
         Command::FullHeal(args) => full_heal(args),
         Command::Checksum(args) => checksum(args),
     }
@@ -169,6 +172,91 @@ fn scrape(args: ScrapeArgs) -> Result<()> {
     db_res.expect("db actor panicked")?;
 
     println!("done");
+    Ok(())
+}
+
+fn quickstats(args: StatsArgs) -> eyre::Result<()> {
+    struct QuickDbStats {
+        n_blocks: u64,
+        n_txs: u64,
+        ts_start: Option<chrono::DateTime<chrono::Utc>>,
+        ts_end: Option<chrono::DateTime<chrono::Utc>>,
+    }
+
+    #[derive(Default, Debug)]
+    struct GlobalQuickDbStats {
+        n_blocks: u64,
+        n_txs: u64,
+        ts_start_min: Option<chrono::DateTime<chrono::Utc>>,
+        ts_start_max: Option<chrono::DateTime<chrono::Utc>>,
+        ts_end_min: Option<chrono::DateTime<chrono::Utc>>,
+        ts_end_max: Option<chrono::DateTime<chrono::Utc>>,
+    }
+
+    // remove duplicates
+    let db_paths: HashSet<_> = args.db_paths.into_iter().collect();
+
+    // compute stats for all databases
+    let db_stats = db_paths
+        .into_par_iter()
+        .map(|p| {
+            db::open(p.clone(), std::io::stdout())
+                .map(|db| QuickDbStats {
+                    n_blocks: db.block_count(),
+                    n_txs: db.tx_count(),
+                    ts_start: db
+                        .left_blocks()
+                        .filter_map(|mb| mb.ok())
+                        .filter_map(|b| b.ts)
+                        .next()
+                        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0)),
+                    ts_end: db
+                        .right_blocks()
+                        .rev()
+                        .filter_map(|mb| mb.ok())
+                        .filter_map(|b| b.ts)
+                        .next()
+                        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0)),
+                })
+                .map_err(|e| (p, e))
+        })
+        .filter_map(|maybe_stats| match maybe_stats {
+            Ok(stats) => Some(GlobalQuickDbStats {
+                n_blocks: stats.n_blocks,
+                n_txs: stats.n_txs,
+                ts_start_min: stats.ts_start,
+                ts_start_max: stats.ts_start,
+                ts_end_min: stats.ts_end,
+                ts_end_max: stats.ts_end,
+            }),
+            Err((p, e)) => {
+                println!("error opening db {p:?}: {e:?}");
+                None
+            }
+        })
+        .reduce(GlobalQuickDbStats::default, |a, b| GlobalQuickDbStats {
+            n_blocks: a.n_blocks + b.n_blocks,
+            n_txs: a.n_txs + b.n_txs,
+            ts_start_min: a
+                .ts_start_min
+                .map(|ts| ts.min(b.ts_start_min.unwrap_or(ts)))
+                .or(b.ts_start_min),
+            ts_start_max: a
+                .ts_start_max
+                .map(|ts| ts.max(b.ts_start_max.unwrap_or(ts)))
+                .or(b.ts_start_max),
+            ts_end_min: a
+                .ts_end_min
+                .map(|ts| ts.min(b.ts_end_min.unwrap_or(ts)))
+                .or(b.ts_end_min),
+            ts_end_max: a
+                .ts_end_max
+                .map(|ts| ts.max(b.ts_end_max.unwrap_or(ts)))
+                .or(b.ts_end_max),
+        });
+
+    println!("{:?}", db_stats);
+
     Ok(())
 }
 
