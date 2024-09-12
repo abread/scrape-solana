@@ -6,6 +6,9 @@ members = [
     "scrape-solana"
 ]
 
+[profile.release]
+debug = true
+
 [profile.release.package.vector-trees]
 overflow-checks = true
 
