@@ -129,17 +129,22 @@ where
             return Ok(());
         }
 
-        if self.len()? >= 2 && self.load(self.len()? - 2).is_err() {
-            return Err(FsStoreError::StoreCorrupted);
-        }
+        // prune corrupted trailing objects
+        let orig_len = self.metadata.len;
+        while self.metadata.len > 0 {
+            if self.load(self.metadata.len - 1).is_ok() {
+                break;
+            }
 
-        if self.load(self.len()? - 1).is_err() {
-            match std::fs::remove_file(self.index_path(self.len()? - 1)) {
+            match std::fs::remove_file(self.index_path(self.metadata.len - 1)) {
                 Ok(_) => (),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => (),
                 Err(e) => return Err(FsStoreError::DataRemove(e)),
             }
             self.metadata.len -= 1;
+        }
+
+        if self.metadata.len != orig_len {
             self.write_metadata()?;
         }
 
