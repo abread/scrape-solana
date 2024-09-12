@@ -21,7 +21,7 @@ where
     clock: u64,
 }
 
-const READAHEAD_COUNT: usize = 4;
+const READAHEAD_COUNT: usize = 8;
 
 impl<T, Store, const CHUNK_SZ: usize> ChunkCache<T, Store, CHUNK_SZ>
 where
@@ -30,8 +30,8 @@ where
 {
     pub(crate) fn new(chunk_store: Store) -> Result<Self, Store::Error> {
         let chunk_count = chunk_store.len()?;
-        let chunk_store = PrefetchableStore::new(chunk_store, READAHEAD_COUNT)
-            .expect("failed to create prefetchable store");
+        let chunk_store =
+            PrefetchableStore::new(chunk_store).expect("failed to create prefetchable store");
 
         Ok(Self {
             chunk_store,

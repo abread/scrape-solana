@@ -1,94 +1,53 @@
 use std::{
     borrow::Borrow,
     collections::HashSet,
+    fmt::Debug,
     io,
     ops::DerefMut,
     sync::{
         mpsc::{sync_channel, Receiver, SyncSender},
-        Arc, Mutex, RwLock,
+        Arc, LazyLock, RwLock,
     },
-    thread::JoinHandle,
 };
 
-use itertools::{Either, Itertools};
+static PREFETCH_THREADPOOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(0)
+        .thread_name(|i| format!("prefetcher-{}", i))
+        .build()
+        .expect("failed to create prefetch threadpool")
+});
 
 use super::IndexedStorage;
 
 pub(in crate::huge_vec) struct PrefetchableStore<T, InnerStore: IndexedStorage<T>> {
     store: Arc<RwLock<InnerStore>>,
     pending_reqs: HashSet<usize>,
-    fetch_req_tx: SyncSender<FetchReq>,
+    fetch_res_tx: SyncSender<(FetchReq, Result<T, InnerStore::Error>)>,
     fetch_res_rx: Receiver<(FetchReq, Result<T, InnerStore::Error>)>,
-    join_handles: Vec<JoinHandle<()>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::huge_vec) struct FetchReq {
     pub object_idx: usize,
-    pub required: bool,
 }
 
 impl<T, InnerStore: IndexedStorage<T>> PrefetchableStore<T, InnerStore>
 where
-    T: Send + 'static,
+    T: Debug + Send + 'static,
     InnerStore::Error: Send,
     InnerStore: Send + Sync + 'static,
 {
-    pub(in crate::huge_vec) fn new(
-        chunk_store: InnerStore,
-        num_workers: usize,
-    ) -> io::Result<Self> {
+    pub(in crate::huge_vec) fn new(chunk_store: InnerStore) -> io::Result<Self> {
         let store = Arc::new(RwLock::new(chunk_store));
-        let (fetch_req_tx, fetch_req_rx) = sync_channel::<FetchReq>(num_workers * 2);
-        let (fetch_res_tx, fetch_res_rx) = sync_channel(num_workers * 2);
-
-        let fetch_req_rx = Arc::new(Mutex::new(fetch_req_rx));
-        let join_handles = (0..num_workers)
-            .map(|i| {
-                let store = Arc::clone(&store);
-                let fetch_req_rx = Arc::clone(&fetch_req_rx);
-                let fetch_res_tx = fetch_res_tx.clone();
-
-                std::thread::Builder::new()
-                    .name(format!("storfetcher-{i}"))
-                    .spawn(move || {
-                        loop {
-                            let req = {
-                                match fetch_req_rx
-                                    .lock()
-                                    .expect("req channel rx lock poisoned")
-                                    .recv()
-                                {
-                                    Ok(req) => req,
-                                    Err(_) => break,
-                                }
-                            };
-
-                            let object = {
-                                let store = store.read().expect("store lock poisoned");
-                                store.load(req.object_idx)
-                            };
-
-                            match fetch_res_tx.send((req, object)) {
-                                Ok(_) => (),
-                                Err(_) if !req.required => break,
-                                Err(_) => {
-                                    // required requests must always be processed
-                                    // caller panicked
-                                    panic!("failed to send required fetch response");
-                                }
-                            }
-                        }
-                    })
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        let max_pending_reqs = PREFETCH_THREADPOOL.current_num_threads() * 2;
+        let (fetch_res_tx, fetch_res_rx) = sync_channel(max_pending_reqs);
 
         Ok(Self {
             store,
-            pending_reqs: HashSet::with_capacity(num_workers * 2),
-            fetch_req_tx,
+            pending_reqs: HashSet::with_capacity(max_pending_reqs),
+            fetch_res_tx,
             fetch_res_rx,
-            join_handles,
         })
     }
 
@@ -96,7 +55,6 @@ where
         // drop all pending prefetches
         while let Ok((req, _)) = self.fetch_res_rx.try_recv() {
             self.pending_reqs.remove(&req.object_idx);
-            assert!(!req.required, "{req:?} required but dropped");
         }
     }
 
@@ -124,15 +82,18 @@ where
     }
 
     pub(in crate::huge_vec) fn prefetch(&mut self, object_idx: usize) {
-        if !self.pending_reqs.contains(&object_idx)
-            && self
-                .fetch_req_tx
-                .try_send(FetchReq {
-                    object_idx,
-                    required: false,
-                })
-                .is_ok()
+        if self.pending_reqs.len() < self.pending_reqs.capacity()
+            && !self.pending_reqs.contains(&object_idx)
         {
+            let store = Arc::clone(&self.store);
+            let fetch_res_tx = self.fetch_res_tx.clone();
+            PREFETCH_THREADPOOL.spawn_fifo(move || {
+                let obj = store.read().expect("lock poisoned").load(object_idx);
+                fetch_res_tx
+                    .send((FetchReq { object_idx }, obj))
+                    .expect("fetch result channel closed");
+            });
+
             self.pending_reqs.insert(object_idx);
         }
     }
@@ -162,25 +123,7 @@ where
                         }
                     }
                     Err(_) => {
-                        // channel was closed, this is not normal
-
-                        // check if fetcher threads panicked
-                        let finished_threads: Vec<_>;
-                        (finished_threads, self.join_handles) =
-                            std::mem::take(&mut self.join_handles)
-                                .into_iter()
-                                .partition_map(|h| {
-                                    if h.is_finished() {
-                                        Either::Left(h)
-                                    } else {
-                                        Either::Right(h)
-                                    }
-                                });
-                        for handle in finished_threads {
-                            handle.join().expect("fetcher thread panicked");
-                        }
-
-                        panic!("fetcher threads closed fetch result channel (without panicking)");
+                        unreachable!("fetch result channel closed but we have references to both ends? rust std bug");
                     }
                 }
             }
@@ -205,18 +148,5 @@ where
 
         self.invalidate_prefetches();
         res
-    }
-}
-
-impl<T, InnerStore: IndexedStorage<T>> Drop for PrefetchableStore<T, InnerStore> {
-    fn drop(&mut self) {
-        // drop req channel to signal fetcher threads to exit
-        let fetch_req_tx = std::mem::replace(&mut self.fetch_req_tx, sync_channel(1).0);
-        std::mem::drop(fetch_req_tx);
-
-        // handle fetcher panics
-        for handle in self.join_handles.drain(..) {
-            handle.join().expect("fetcher thread panicked");
-        }
     }
 }
