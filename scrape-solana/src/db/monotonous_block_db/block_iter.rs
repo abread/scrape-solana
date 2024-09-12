@@ -86,7 +86,7 @@ impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
                 let block_tx = self.block_tx.clone();
                 rayon::spawn(move || {
                     let block = check_rebuild_block(block_rec, txs);
-                    block_tx.send((idx, block)).unwrap();
+                    let _ = block_tx.send((idx, block));
                 });
 
                 self.pending_blocks.insert(idx);
