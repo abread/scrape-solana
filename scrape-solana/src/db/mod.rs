@@ -179,20 +179,40 @@ fn upgrade_db<
 
     let _ = writeln!(out, "creating new db in temporary directory");
     let new_path = tempfile::tempdir_in(root_path.parent().unwrap_or(Path::new("..")))?;
-    {
-        let mut new_db = Db::create(new_path.path().to_owned(), old_db.middle_slot, &mut out)?;
-        new_db.sync()?;
-    }
+    let mut new_db = Db::create(new_path.path().to_owned(), old_db.middle_slot, &mut out)?;
+    new_db.sync()?;
 
     let _ = writeln!(out, "copying data from old db");
     let (b_tx, b_rx) = std::sync::mpsc::sync_channel::<eyre::Result<Block>>(1024);
     let (a_tx, a_rx) = std::sync::mpsc::sync_channel::<eyre::Result<Account>>(1024);
 
-    let putter_thread_handle = {
-        let new_path = new_path.path().to_owned();
-        std::thread::spawn(move || {
-            let mut new_db = Db::open_existing(new_path)?;
+    let (old_db, new_db) = rayon::join(
+        move || {
+            // copy blocks
+            // iterate left blocks in reverse to match storage order (from middle slot to 0)
+            // TODO: split left/right for faster migration
+            for block in old_db.left_blocks().rev().chain(old_db.right_blocks()) {
+                let _ = b_tx.send(block);
+            }
+            std::mem::drop(b_tx);
 
+            for account_idx in 0..old_db.account_records.len().saturating_sub(1) {
+                if old_db
+                    .account_records
+                    .get(account_idx)
+                    .map(|r| r.is_endcap())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let account = old_db.get_account_by_idx(account_idx);
+                let _ = a_tx.send(account);
+            }
+            std::mem::drop(a_tx);
+
+            old_db
+        },
+        move || {
             for block in b_rx {
                 let block = block.wrap_err("upgrade failed: failed to fetch block from old db")?;
                 new_db
@@ -209,46 +229,21 @@ fn upgrade_db<
             }
 
             new_db.sync()?;
-            Ok::<_, eyre::Report>(())
-        })
+            Ok::<_, eyre::Report>(new_db)
+        },
+    );
+    let mut new_db = new_db?;
+
+    let _ = writeln!(
+        out,
+        "db copied. checksumming to verify data was migrated correctly"
+    );
+    let mut old_db = old_db; // make old db mutable for checksumming
+
+    let (old_checksum, new_checksum) = {
+        let (old_db, new_db) = (&mut old_db, &mut new_db);
+        rayon::join(move || old_db.checksum(), move || new_db.checksum())
     };
-
-    // copy blocks
-    // iterate left blocks in reverse to match storage order (from middle slot to 0)
-    for block in old_db.left_blocks().rev().chain(old_db.right_blocks()) {
-        let _ = b_tx.send(block);
-    }
-    std::mem::drop(b_tx);
-
-    for account_idx in 0..old_db.account_records.len().saturating_sub(1) {
-        if old_db
-            .account_records
-            .get(account_idx)
-            .map(|r| r.is_endcap())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let account = old_db.get_account_by_idx(account_idx);
-        let _ = a_tx.send(account);
-    }
-    std::mem::drop(a_tx);
-
-    putter_thread_handle
-        .join()
-        .expect("upgrade failed: putter thread panicked")?;
-
-    let new_checksum_handle = {
-        let new_path = new_path.path().to_owned();
-        std::thread::spawn(move || {
-            let new_db = Db::open_existing(new_path)?;
-            new_db.checksum()
-        })
-    };
-    let old_checksum = old_db.checksum()?;
-    let new_checksum = new_checksum_handle
-        .join()
-        .expect("checksum thread panicked")?;
     eyre::ensure!(
         old_checksum == new_checksum,
         "checksum mismatch after upgrade: old {old_checksum:#X} != new {new_checksum:#X}"
@@ -693,31 +688,20 @@ impl<
         })
     }
 
-    pub fn checksum(&self) -> eyre::Result<u64> {
-        let (b_tx, b_rx) = std::sync::mpsc::sync_channel(128);
-        let (a_tx, a_rx) = std::sync::mpsc::sync_channel(128);
-        let worker = std::thread::spawn(|| {
-            const CRC: crc::Crc<u64, crc::Table<1>> =
-                crc::Crc::<u64, crc::Table<1>>::new(&crc::CRC_64_GO_ISO);
-            let mut hasher = CRC.digest();
+    pub fn checksum(&mut self) -> u64 {
+        const CRC: crc::Crc<u64, crc::Table<1>> =
+            crc::Crc::<u64, crc::Table<1>>::new(&crc::CRC_64_GO_ISO);
+        let mut hasher = CRC.digest();
 
-            for block in b_rx {
-                let block = block?;
-                hasher.update(&checksum(&block).to_le_bytes());
-            }
+        let left = &mut self.left;
+        let right = &mut self.right;
+        let (left_csum, right_csum) =
+            rayon::join(move || left.checksum(), move || right.checksum());
 
-            for account in a_rx {
-                let account = account?;
-                hasher.update(&checksum(&account).to_le_bytes());
-            }
+        hasher.update(&left_csum.to_le_bytes());
+        hasher.update(&right_csum.to_le_bytes());
 
-            Ok(hasher.finalize())
-        });
-
-        for block in self.left_blocks().chain(self.right_blocks()) {
-            b_tx.send(block).expect("checksum worker panicked?");
-        }
-        std::mem::drop(b_tx);
+        hasher.update(&self.account_records.len().to_le_bytes());
 
         for account_idx in 0..self.account_records.len().saturating_sub(1) {
             if self
@@ -728,12 +712,13 @@ impl<
             {
                 continue;
             }
-            a_tx.send(self.get_account_by_idx(account_idx))
-                .expect("checksum worker panicked?");
-        }
-        std::mem::drop(a_tx);
 
-        worker.join().expect("checksum worker panicked")
+            if let Ok(account) = self.get_account_by_idx(account_idx) {
+                hasher.update(&checksum(&account).to_le_bytes());
+            }
+        }
+
+        hasher.finalize()
     }
 
     pub fn sync(&mut self) -> eyre::Result<()> {

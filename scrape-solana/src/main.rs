@@ -6,7 +6,7 @@ use scrape_solana::{
     solana_api::SolanaApi,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::Debug,
     path::{Path, PathBuf},
     str::FromStr,
@@ -35,6 +35,8 @@ enum Command {
     Stats(StatsArgs),
     /// Fully heal a corrupted database fetching any missing blocks/txs.
     FullHeal(ScrapeArgs),
+    /// Compute a checksum summarizing all data in one or more Solana DBs
+    Checksum(StatsArgs),
 }
 
 #[derive(clap::Args)]
@@ -80,6 +82,7 @@ fn main() -> Result<()> {
         Command::Scrape(scrape_args) => scrape(scrape_args),
         Command::Stats(stats_args) => stats(stats_args),
         Command::FullHeal(args) => full_heal(args),
+        Command::Checksum(args) => checksum(args),
     }
 }
 
@@ -303,6 +306,29 @@ fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
     std::fs::remove_dir_all(old_path).wrap_err("failed to remove old DB")?;
 
     println!("heal complete!");
+
+    Ok(())
+}
+
+fn checksum(args: StatsArgs) -> eyre::Result<()> {
+    // ensure there are no duplicates
+    let db_paths: HashSet<_> = args.db_paths.into_iter().collect();
+
+    let checksums = db_paths
+        .into_par_iter()
+        .map(|db_path| {
+            (
+                db_path.clone(),
+                db::open(db_path.clone(), std::io::stdout())
+                    .wrap_err_with(|| eyre!("failed to open db {db_path:?}"))
+                    .map(|mut db| db.checksum()),
+            )
+        })
+        .collect::<HashMap<_, eyre::Result<_>>>();
+
+    for (path, maybe_csum) in checksums {
+        println!("checksum for {path:?}:\t{maybe_csum:#X?}");
+    }
 
     Ok(())
 }

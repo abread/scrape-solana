@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::mpsc::sync_channel;
 
 use eyre::{eyre, WrapErr};
+use itertools::Itertools;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use super::HugeVec;
 use crate::crc_checksum_serde::checksum;
@@ -389,6 +391,30 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
             n_missing,
             problems,
         }
+    }
+
+    pub fn checksum(&mut self) -> u64 {
+        const CRC: crc::Crc<u64, crc::Table<1>> =
+            crc::Crc::<u64, crc::Table<1>>::new(&crc::CRC_64_GO_ISO);
+        let mut hasher = CRC.digest();
+
+        hasher.update(&self.block_records.len().to_le_bytes());
+
+        let chunked_blocks = self.blocks().chunks(rayon::current_num_threads() * 4);
+        let blocks_csum = chunked_blocks
+            .into_iter()
+            .map(|chunk| {
+                let chunk = chunk.filter_map(|mb| mb.ok()).collect_vec();
+                chunk
+                    .into_par_iter()
+                    .map(|b| checksum(&b))
+                    .reduce(|| 0u64, |a, b| a.wrapping_add(b))
+            })
+            .fold(0u64, |a, b| a.wrapping_add(b));
+
+        hasher.update(&blocks_csum.to_le_bytes());
+
+        hasher.finalize()
     }
 }
 
