@@ -947,6 +947,13 @@ impl<
         let len = self.db.account_records.len().saturating_sub(2) as usize;
         (len, Some(len))
     }
+
+    fn last(mut self) -> Option<Self::Item>
+    where
+        Self: Sized,
+    {
+        self.next_back()
+    }
 }
 
 impl<
