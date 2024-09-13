@@ -89,9 +89,7 @@ where
             let fetch_res_tx = self.fetch_res_tx.clone();
             PREFETCH_THREADPOOL.spawn_fifo(move || {
                 let obj = store.read().expect("lock poisoned").load(object_idx);
-                fetch_res_tx
-                    .send((FetchReq { object_idx }, obj))
-                    .expect("fetch result channel closed");
+                let _ = fetch_res_tx.send((FetchReq { object_idx }, obj));
             });
 
             self.pending_reqs.insert(object_idx);
