@@ -94,7 +94,7 @@ fn db_full_healer_actor(
         let db_tx = db_tx.clone();
 
         std::thread::Builder::new()
-            .name("db_full_healer(left)".to_owned())
+            .name("db-heal-l".to_owned())
             .spawn(move || {
                 match block_db_full_healer_actor(
                     left,
@@ -129,7 +129,7 @@ fn db_full_healer_actor(
         let db_tx = db_tx.clone();
 
         std::thread::Builder::new()
-            .name("db_full_healer(left)".to_owned())
+            .name("db-heal-r".to_owned())
             .spawn(move || {
                 match block_db_full_healer_actor(
                     right,
