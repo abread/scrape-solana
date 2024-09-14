@@ -18,9 +18,7 @@ use model::AccountRecord;
 //use huge_map::MapFsStore;
 
 mod monotonous_block_db;
-pub use monotonous_block_db::MonotonousBlockDb;
-
-use self::monotonous_block_db::BlockIter;
+pub use monotonous_block_db::{BlockIter, MonotonousBlockDb};
 
 pub(crate) type HugeVec<T, const CHUNK_SZ: usize> = crate::huge_vec::HugeVec<
     T,

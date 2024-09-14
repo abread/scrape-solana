@@ -88,7 +88,7 @@ fn db_full_healer_actor(
             .map(|b| b.slot)
             .unwrap_or(middle_slot);
         let end = middle_slot;
-        let range = (start..=end).step_by(step as usize);
+        let range = (start..=end).rev().step_by(step as usize);
         let block_handler_tx = block_handler_tx.clone();
         let api = Arc::clone(&api);
         let db_tx = db_tx.clone();
@@ -190,6 +190,7 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
             let block = if stored_blocks.peek().map(|b| b.slot) == Some(slot) {
                 stored_blocks.next().unwrap()
             } else {
+                eprintln!("refetching {slot}");
                 loop {
                     handle_cancelled!();
 
