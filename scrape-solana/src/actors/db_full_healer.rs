@@ -184,9 +184,9 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
     let mut stored_blocks = db.blocks().filter_map(|b| b.ok()).peekable();
 
     for slot_chunk in slots.chunks(db::DB_PARAMS.block_rec_cs).into_iter() {
-        handle_cancelled!();
-
         'filler_loop: for slot in slot_chunk {
+            handle_cancelled!();
+
             let block = if stored_blocks.peek().map(|b| b.slot) == Some(slot) {
                 stored_blocks.next().unwrap()
             } else {
@@ -208,10 +208,6 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
                         }
                         Err(solana_api::Error::PostTimeoutCooldown) => {
                             // not really a timeout, just continuing the previous timeout
-                            // but it's so large that we might as well sync the db while we wait
-                            db_tx
-                                .send(DbOperation::Sync)
-                                .map_err(|_| eyre!("db closed"))?;
                             continue;
                         }
                         Err(solana_api::Error::SolanaClient(e)) => {
@@ -224,6 +220,20 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
             block_handler_tx
                 .send(block)
                 .map_err(|_| eyre!("block handler closed"))?;
+        }
+
+        db_tx
+            .send(DbOperation::Sync)
+            .map_err(|_| eyre!("db closed"))?;
+    }
+
+    db_tx
+        .send(DbOperation::Sync)
+        .map_err(|_| eyre!("db closed"))?;
+
+    if let Some(cancel_tx) = cancel_tx {
+        if let Ok(DBFullHealerOperation::Cancel) = cancel_rx.recv() {
+            let _ = cancel_tx.try_send(DBFullHealerOperation::Cancel);
         }
     }
 
