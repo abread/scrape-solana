@@ -1,14 +1,28 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     borrow::Borrow,
+    collections::HashMap,
     fmt::Debug,
     fs,
     io::{self, BufReader, BufWriter, Seek},
     marker::PhantomData,
     ops::BitAnd,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{sync_channel, Receiver, SyncSender},
+        Arc, Condvar, LazyLock, Mutex,
+    },
 };
 use tempfile::NamedTempFile;
+
+static ASYNC_WRITE_THREADPOOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(0)
+        .thread_name(|i| format!("async-write-{i}"))
+        .build()
+        .expect("failed to create async write threadpool")
+});
 
 pub trait IndexedStorage<T> {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -23,15 +37,31 @@ pub trait IndexedStorage<T> {
     fn clear(&mut self) -> Result<(), Self::Error> {
         self.truncate(0)
     }
+
+    fn sync(&mut self) -> Result<(), Self::Error>;
 }
 
 use crate::huge_vec::IOTransformer;
 
-pub struct FsStore<T, IOT> {
-    root: PathBuf,
+pub struct FsStore<T, IOT>
+where
+    IOT: IOTransformer + Send + Sync + 'static,
+    T: Serialize + DeserializeOwned + Debug + Send + Sync + Clone + 'static,
+{
+    root: Arc<PathBuf>,
+    clock: Arc<AtomicU64>,
     metadata: BasicStorageMeta,
-    io_transformer: IOT,
+    io_transformer: Arc<IOT>,
+    async_write_state: Arc<AsyncWriteState<T>>,
+    write_err_tx: SyncSender<FsStoreError<IOT::Error>>,
+    write_err_rx: Mutex<Receiver<FsStoreError<IOT::Error>>>,
+    metadata_write_lock: Arc<Mutex<()>>,
     _t: PhantomData<T>,
+}
+
+struct AsyncWriteState<T> {
+    pending: Mutex<HashMap<usize, Arc<T>>>,
+    cond_pending_empty: Condvar,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -81,8 +111,8 @@ pub enum FsStoreError<IOTErr> {
 
 impl<T, IOT> FsStore<T, IOT>
 where
-    IOT: IOTransformer,
-    T: Serialize + DeserializeOwned + Debug,
+    IOT: IOTransformer + Send + Sync + 'static,
+    T: Serialize + DeserializeOwned + Debug + Send + Sync + Clone + 'static,
 {
     pub fn open(
         root: impl AsRef<Path>,
@@ -90,33 +120,25 @@ where
     ) -> Result<Self, FsStoreError<IOT::Error>> {
         fs::create_dir_all(root.as_ref()).map_err(FsStoreError::DirCreate)?;
 
-        let mut metadata_file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .read(true)
-            .open(root.as_ref().join("meta"))
-            .map_err(FsStoreError::MetadataOpen)?;
+        let metadata = BasicStorageMeta::read_or_default(&root, &io_transformer)?;
 
-        let metadata_size = metadata_file
-            .seek(io::SeekFrom::End(0))
-            .and_then(|_| metadata_file.stream_position())
-            .and_then(|size| metadata_file.seek(io::SeekFrom::Start(0)).map(|_| size))
-            .map_err(FsStoreError::MetadataOpen)?;
-
-        let metadata: BasicStorageMeta = if metadata_size == 0 {
-            BasicStorageMeta::default()
-        } else {
-            let reader = BufReader::new(&metadata_file);
-            io_transformer.wrap_read(reader, |r| {
-                bincode::deserialize_from(r).map_err(FsStoreError::MetadataRead)
-            })?
-        };
+        let (write_err_tx, write_err_rx) =
+            sync_channel(ASYNC_WRITE_THREADPOOL.current_num_threads() * 2);
 
         let mut store = Self {
-            root: root.as_ref().to_owned(),
+            root: Arc::new(root.as_ref().to_owned()),
+            clock: Arc::new(AtomicU64::new(0)),
             metadata,
-            io_transformer,
+            io_transformer: Arc::new(io_transformer),
+            async_write_state: Arc::new(AsyncWriteState {
+                pending: Mutex::new(HashMap::with_capacity(
+                    ASYNC_WRITE_THREADPOOL.current_num_threads() * 2,
+                )),
+                cond_pending_empty: Condvar::new(),
+            }),
+            write_err_tx,
+            write_err_rx: Mutex::new(write_err_rx),
+            metadata_write_lock: Arc::new(Mutex::new(())),
             _t: PhantomData,
         };
         store.heal()?;
@@ -145,25 +167,8 @@ where
         }
 
         if self.metadata.len != orig_len {
-            self.write_metadata()?;
+            self.metadata.write_to(&*self.root, &*self.io_transformer)?;
         }
-
-        Ok(())
-    }
-
-    fn write_metadata(&mut self) -> Result<(), FsStoreError<IOT::Error>> {
-        let mut metadata_file =
-            NamedTempFile::new_in(&self.root).map_err(FsStoreError::MetadataOpen)?;
-
-        let writer = BufWriter::new(&mut metadata_file);
-        self.io_transformer.wrap_write(writer, |w| {
-            bincode::serialize_into(w, &self.metadata).map_err(FsStoreError::MetadataWrite)
-        })?;
-
-        // persist new version of metadata without the risk of partial writes
-        metadata_file
-            .persist(self.root.join("meta"))
-            .map_err(FsStoreError::MetadataPersist)?;
 
         Ok(())
     }
@@ -181,8 +186,8 @@ where
 
 impl<T, IOT> IndexedStorage<T> for FsStore<T, IOT>
 where
-    IOT: IOTransformer,
-    T: Serialize + DeserializeOwned + Debug,
+    IOT: IOTransformer + Send + Sync + 'static,
+    T: Serialize + DeserializeOwned + Debug + Send + Sync + Clone + 'static,
 {
     type Error = FsStoreError<IOT::Error>;
 
@@ -192,6 +197,18 @@ where
                 len: self.metadata.len,
                 idx,
             });
+        }
+
+        {
+            // consistency: make pending writes visible
+            let pending_stores = self
+                .async_write_state
+                .pending
+                .lock()
+                .expect("lock poisoned");
+            if let Some(obj) = pending_stores.get(&idx) {
+                return Ok(obj.as_ref().clone());
+            }
         }
 
         let path = self.index_path(idx);
@@ -207,10 +224,10 @@ where
     }
 
     fn store(&mut self, idx: usize, object: impl Borrow<T>) -> Result<(), Self::Error> {
-        match idx.cmp(&self.metadata.len) {
+        let metadata_time = match idx.cmp(&self.metadata.len) {
             std::cmp::Ordering::Equal => {
                 self.metadata.len += 1;
-                self.write_metadata()?;
+                self.clock.fetch_add(1, Ordering::SeqCst) + 1
             }
             std::cmp::Ordering::Greater => {
                 return Err(FsStoreError::NonContiguousStore {
@@ -218,22 +235,111 @@ where
                     idx,
                 });
             }
-            _ => (),
-        }
+            _ => 0,
+        };
 
         let path = self.index_path(idx);
-        fs::create_dir_all(path.parent().unwrap()).map_err(FsStoreError::DataOpen)?; // unwrap is safe because we know the path has a parent
 
-        let mut tempfile = NamedTempFile::new_in(&self.root).map_err(FsStoreError::DataOpen)?;
+        let do_write = move |object: &T,
+                             clock: &AtomicU64,
+                             root: &Path,
+                             io_transformer: &IOT,
+                             new_metadata: &BasicStorageMeta,
+                             meta_write_lock: &Mutex<()>|
+              -> Result<(), FsStoreError<IOT::Error>> {
+            fs::create_dir_all(path.parent().unwrap()).map_err(FsStoreError::DataOpen)?; // unwrap is safe because we know the path has a parent
+            let mut tempfile = NamedTempFile::new_in(root).map_err(FsStoreError::DataOpen)?;
 
-        self.io_transformer.wrap_write(&mut tempfile, |w| {
-            bincode::serialize_into(w, object.borrow()).map_err(FsStoreError::DataStore)
-        })?;
+            io_transformer.wrap_write(&mut tempfile, |w| {
+                bincode::serialize_into(w, object).map_err(FsStoreError::DataStore)
+            })?;
 
-        // persist new version of object without the risk of partial writes
-        tempfile.persist(path).map_err(FsStoreError::DataPersist)?;
+            // persist new version of object without the risk of partial writes
+            tempfile.persist(path).map_err(FsStoreError::DataPersist)?;
 
-        Ok(())
+            if metadata_time != 0 && metadata_time >= clock.load(Ordering::SeqCst) {
+                let _lock = meta_write_lock.lock().expect("lock poisoned");
+                if metadata_time >= clock.load(Ordering::SeqCst) {
+                    new_metadata.write_to(root, io_transformer)?;
+                }
+            }
+
+            Ok(())
+        };
+
+        let mut pending_stores = self
+            .async_write_state
+            .pending
+            .lock()
+            .expect("lock poisoned");
+
+        // ensure there are no overwrites
+        while pending_stores.contains_key(&idx) {
+            pending_stores = self
+                .async_write_state
+                .cond_pending_empty
+                .wait(pending_stores)
+                .expect("lock poisoned");
+        }
+
+        if pending_stores.len() < pending_stores.capacity() {
+            // queue write
+            let object = Arc::new(object.borrow().clone());
+            pending_stores.insert(idx, Arc::clone(&object));
+            std::mem::drop(pending_stores); // we don't need the lock anymore
+
+            let clock = Arc::clone(&self.clock);
+            let root = Arc::clone(&self.root);
+            let io_transformer = Arc::clone(&self.io_transformer);
+            let new_metadata = self.metadata.clone();
+            let meta_write_lock = Arc::clone(&self.metadata_write_lock);
+            let write_err_tx = self.write_err_tx.clone();
+            let async_write_state = Arc::clone(&self.async_write_state);
+            ASYNC_WRITE_THREADPOOL.spawn(move || {
+                if let Err(e) = do_write(
+                    &object,
+                    &clock,
+                    &root,
+                    &io_transformer,
+                    &new_metadata,
+                    &meta_write_lock,
+                ) {
+                    let _ = write_err_tx.send(e);
+                }
+
+                async_write_state
+                    .pending
+                    .lock()
+                    .expect("lock poisoned")
+                    .remove(&idx);
+                async_write_state.cond_pending_empty.notify_all();
+            });
+
+            Ok(())
+        } else {
+            if let Ok(err) = self
+                .write_err_rx
+                .get_mut()
+                .expect("poisoned lock")
+                .try_recv()
+            {
+                // revert metadata update
+                if metadata_time != 0 {
+                    self.metadata.len -= 1;
+                }
+
+                return Err(err);
+            }
+
+            do_write(
+                object.borrow(),
+                &self.clock,
+                &self.root,
+                &self.io_transformer,
+                &self.metadata,
+                &self.metadata_write_lock,
+            )
+        }
     }
 
     fn len(&self) -> Result<usize, Self::Error> {
@@ -245,16 +351,15 @@ where
             return Ok(());
         }
 
-        let old_len = self.metadata.len;
-        self.metadata.len = new_len;
+        // must execute after all pending stores finish to avoid overwrites
+        self.sync()?;
 
-        match self.write_metadata() {
-            Ok(_) => (),
-            Err(e) => {
-                self.metadata.len = old_len;
-                return Err(e);
-            }
-        }
+        let old_len = self.metadata.len;
+
+        self.metadata.len = new_len;
+        // Note: safe to write without lock because there are no concurrent async writes
+        // we called sync() and are holding a &mut reference to Self
+        self.metadata.write_to(&*self.root, &*self.io_transformer)?;
 
         for idx in new_len..old_len {
             let path = self.index_path(idx);
@@ -263,11 +368,103 @@ where
 
         Ok(())
     }
+
+    fn sync(&mut self) -> Result<(), Self::Error> {
+        let mut pending_stores = self
+            .async_write_state
+            .pending
+            .lock()
+            .expect("lock poisoned");
+        while !pending_stores.is_empty() {
+            if let Ok(err) = self.write_err_rx.lock().expect("lock poisoned").try_recv() {
+                return Err(err);
+            }
+
+            pending_stores = self
+                .async_write_state
+                .cond_pending_empty
+                .wait(pending_stores)
+                .expect("lock poisoned");
+        }
+
+        Ok(())
+    }
 }
 
-#[derive(Serialize, Deserialize, Default)]
+impl<T, IOT> Drop for FsStore<T, IOT>
+where
+    IOT: IOTransformer + Send + Sync + 'static,
+    T: Serialize + DeserializeOwned + Debug + Send + Sync + Clone + 'static,
+{
+    fn drop(&mut self) {
+        self.sync().expect("storage sync fail");
+        if let Ok(err) = self
+            .write_err_rx
+            .get_mut()
+            .expect("poisoned lock")
+            .try_recv()
+        {
+            panic!("sync fail: {err:#?}");
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
 struct BasicStorageMeta {
     len: usize,
+}
+
+impl BasicStorageMeta {
+    fn read_or_default<IOT: IOTransformer>(
+        root: impl AsRef<Path>,
+        io_transformer: &IOT,
+    ) -> Result<Self, FsStoreError<IOT::Error>> {
+        let mut metadata_file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(root.as_ref().join("meta"))
+            .map_err(FsStoreError::MetadataOpen)?;
+
+        let metadata_size = metadata_file
+            .seek(io::SeekFrom::End(0))
+            .and_then(|_| metadata_file.stream_position())
+            .and_then(|size| metadata_file.seek(io::SeekFrom::Start(0)).map(|_| size))
+            .map_err(FsStoreError::MetadataOpen)?;
+
+        let metadata = if metadata_size == 0 {
+            BasicStorageMeta::default()
+        } else {
+            let reader = BufReader::new(&metadata_file);
+            io_transformer.wrap_read(reader, |r| {
+                bincode::deserialize_from(r).map_err(FsStoreError::MetadataRead)
+            })?
+        };
+
+        Ok(metadata)
+    }
+
+    fn write_to<IOT: IOTransformer>(
+        &self,
+        root: impl AsRef<Path>,
+        io_transformer: &IOT,
+    ) -> Result<(), FsStoreError<IOT::Error>> {
+        let meta_path = root.as_ref().join("meta");
+        let mut metadata_file = NamedTempFile::new_in(root).map_err(FsStoreError::MetadataOpen)?;
+
+        let writer = BufWriter::new(&mut metadata_file);
+        io_transformer.wrap_write(writer, |w| {
+            bincode::serialize_into(w, self).map_err(FsStoreError::MetadataWrite)
+        })?;
+
+        // persist new version of metadata without the risk of partial writes
+        metadata_file
+            .persist(meta_path)
+            .map_err(FsStoreError::MetadataPersist)?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -143,6 +143,8 @@ where
                     c.clean_dirty_with(|chunk| chunk_store.store(*id, chunk))?;
                 }
             }
+
+            chunk_store.sync()?;
             Ok(())
         })
     }
