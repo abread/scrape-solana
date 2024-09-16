@@ -153,12 +153,8 @@ fn db_full_healer_actor(
         .name("db-heal-cancel".to_owned())
         .spawn(move || {
             if let Ok(DBFullHealerOperation::Cancel) = rx.recv() {
-                if let Err(e) = left_cancel_tx.send(DBFullHealerOperation::Cancel) {
-                    eprintln!("failed to cancel left db healer: {e}");
-                }
-                if let Err(e) = right_cancel_tx.send(DBFullHealerOperation::Cancel) {
-                    eprintln!("failed to cancel right db healer: {e}");
-                }
+                let _ = left_cancel_tx.send(DBFullHealerOperation::Cancel);
+                let _ = right_cancel_tx.send(DBFullHealerOperation::Cancel);
             }
         })
         .expect("failed to spawn db-heal-cancel thread");
