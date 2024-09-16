@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_SLEEP: Duration = Duration::from_secs(10);
+const MAX_SLEEP: Duration = Duration::from_secs(5);
 
 const MIN_WAIT: Duration = Duration::from_millis(10000 / 100); // 100 reqs/10s per IP
 
@@ -111,7 +111,7 @@ impl SolanaApiInner {
 
         let res = match f(&mut self.client) {
             Ok(r) => {
-                if self.wait != MIN_WAIT {
+                if self.wait > MIN_WAIT {
                     self.wait -= Duration::from_millis({
                         let delta = self.wait.as_millis() - MIN_WAIT.as_millis();
                         if delta < 100 {
@@ -128,7 +128,8 @@ impl SolanaApiInner {
                 kind: ClientErrorKind::Reqwest(inner_e),
                 request,
             }) if inner_e.is_timeout() => {
-                self.wait *= 2;
+                self.wait *= 5;
+                self.wait /= 4;
                 Err(Error::Timeout(ClientError {
                     kind: ClientErrorKind::Reqwest(inner_e),
                     request,
@@ -138,7 +139,8 @@ impl SolanaApiInner {
                 kind: ClientErrorKind::Reqwest(inner_e),
                 request,
             }) if inner_e.is_timeout() || inner_e.is_decode() => {
-                self.wait *= 2;
+                self.wait *= 5;
+                self.wait /= 4;
                 Err(Error::Timeout(ClientError {
                     kind: ClientErrorKind::Reqwest(inner_e),
                     request,
@@ -150,7 +152,8 @@ impl SolanaApiInner {
                     ..
                 },
             ) if code == -32004 || code == -32014 || code == -32016 => {
-                self.wait *= 2;
+                self.wait *= 3;
+                self.wait /= 2;
                 Err(Error::Timeout(e))
             }
             Err(
@@ -171,7 +174,8 @@ impl SolanaApiInner {
                     ..
                 },
             ) => {
-                self.wait *= 2;
+                self.wait *= 5;
+                self.wait /= 4;
                 Err(Error::Timeout(e))
             }
             Err(
