@@ -78,6 +78,7 @@ fn db_full_healer_actor(
     // salvage blocks, filling in gaps
     let (left, middle_slot, right) = old_db.split();
 
+    let (left_cancel_tx, left_cancel_rx) = sync_channel(1);
     let (right_cancel_tx, right_cancel_rx) = sync_channel(1);
 
     let left_thread_handle = {
@@ -99,8 +100,7 @@ fn db_full_healer_actor(
                 match block_db_full_healer_actor(
                     left,
                     range,
-                    rx,
-                    Some(right_cancel_tx),
+                    left_cancel_rx,
                     api,
                     block_handler_tx,
                     db_tx,
@@ -124,7 +124,7 @@ fn db_full_healer_actor(
             .map(|b| b.slot)
             .unwrap_or(middle_slot);
         let range = (start..=end).step_by(step as usize);
-        let block_handler_tx = block_handler_tx.clone();
+        let block_handler_tx = block_handler_tx;
         let api = Arc::clone(&api);
         let db_tx = db_tx.clone();
 
@@ -135,7 +135,6 @@ fn db_full_healer_actor(
                     right,
                     range,
                     right_cancel_rx,
-                    None,
                     api,
                     block_handler_tx,
                     db_tx,
@@ -150,12 +149,27 @@ fn db_full_healer_actor(
             .expect("failed to spawn block fetcher actor thread")
     };
 
+    let cancel_handle = std::thread::Builder::new()
+        .name("db-heal-cancel".to_owned())
+        .spawn(move || {
+            if let Ok(DBFullHealerOperation::Cancel) = rx.recv() {
+                if let Err(e) = left_cancel_tx.send(DBFullHealerOperation::Cancel) {
+                    eprintln!("failed to cancel left db healer: {e}");
+                }
+                if let Err(e) = right_cancel_tx.send(DBFullHealerOperation::Cancel) {
+                    eprintln!("failed to cancel right db healer: {e}");
+                }
+            }
+        })
+        .expect("failed to spawn db-heal-cancel thread");
+
     right_thread_handle
         .join()
-        .expect("right db healer thread failed")?;
+        .expect("right db healer thread panicked")?;
     left_thread_handle
         .join()
-        .expect("left db healer thread failed")?;
+        .expect("left db healer thread panicked")?;
+    cancel_handle.join().expect("healer cancel thread panicked");
     Ok(())
 }
 
@@ -163,36 +177,26 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
     db: db::MonotonousBlockDb<BCS, TXCS>,
     slots: impl Iterator<Item = u64>,
     cancel_rx: Receiver<DBFullHealerOperation>,
-    cancel_tx: Option<SyncSender<DBFullHealerOperation>>, // allow chaining of cancellations
     api: Arc<SolanaApi>,
     block_handler_tx: SyncSender<Block>,
     db_tx: SyncSender<DbOperation>,
 ) -> eyre::Result<()> {
-    macro_rules! handle_cancelled {
-        () => {
-            if let Ok(DBFullHealerOperation::Cancel) = cancel_rx.try_recv() {
-                if let Some(cancel_tx) = cancel_tx {
-                    cancel_tx
-                        .send(DBFullHealerOperation::Cancel)
-                        .map_err(|_| eyre!("failed to cancel other actor"))?;
-                }
-                return Err(eyre!("Heal cancelled"));
-            }
-        };
-    }
-
     let mut stored_blocks = db.blocks().filter_map(|b| b.ok()).peekable();
 
     for slot_chunk in slots.chunks(db::DB_PARAMS.block_rec_cs).into_iter() {
         'filler_loop: for slot in slot_chunk {
-            handle_cancelled!();
+            if let Ok(DBFullHealerOperation::Cancel) = cancel_rx.try_recv() {
+                return Err(eyre!("Heal cancelled"));
+            }
 
             let block = if stored_blocks.peek().map(|b| b.slot) == Some(slot) {
                 stored_blocks.next().unwrap()
             } else {
                 eprintln!("refetching {slot}");
                 loop {
-                    handle_cancelled!();
+                    if let Ok(DBFullHealerOperation::Cancel) = cancel_rx.try_recv() {
+                        return Err(eyre!("Heal cancelled"));
+                    }
 
                     match api.fetch_block(slot) {
                         Ok(Some(block)) => {
@@ -225,16 +229,6 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
         db_tx
             .send(DbOperation::Sync)
             .map_err(|_| eyre!("db closed"))?;
-    }
-
-    db_tx
-        .send(DbOperation::Sync)
-        .map_err(|_| eyre!("db closed"))?;
-
-    if let Some(cancel_tx) = cancel_tx {
-        if let Ok(DBFullHealerOperation::Cancel) = cancel_rx.recv() {
-            let _ = cancel_tx.try_send(DBFullHealerOperation::Cancel);
-        }
     }
 
     Ok(())
