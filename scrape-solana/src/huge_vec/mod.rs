@@ -16,9 +16,6 @@ pub use chunk::Chunk;
 use chunk_cache::{CachedChunk, ChunkCache};
 pub use io_transformer::{IOTransformer, ZstdTransformer};
 pub use storage::{FsStore, FsStoreError, IndexedStorage};
-
-pub(crate) const CHUNK_CACHE_RECLAMATION_INTERVAL: usize = 32;
-
 pub struct HugeVec<T, Store, const CHUNK_SZ: usize = 4096>
 where
     T: Debug + Send + 'static,
@@ -648,8 +645,8 @@ mod test {
 
     use crate::huge_vec::FsStore;
     use crate::huge_vec::IOTransformer;
-    use crate::huge_vec::CHUNK_CACHE_RECLAMATION_INTERVAL;
 
+    use super::chunk_cache::READAHEAD_COUNT;
     use super::HugeVec;
     use super::ZstdTransformer;
 
@@ -697,10 +694,7 @@ mod test {
     test_push_readback!(single_chunk_push, 8 * 1 + 0);
     test_push_readback!(partial_chunk_push, 8 * 0 + 1);
     test_push_readback!(multi_chunk_push, 8 * 3 + 4);
-    test_push_readback!(
-        multi_chunk_push_gc,
-        2 * (CHUNK_CACHE_RECLAMATION_INTERVAL as u64 * 2) + 4
-    );
+    test_push_readback!(multi_chunk_push_gc, 2 * (READAHEAD_COUNT as u64 * 2) + 4);
 
     #[test]
     fn truncate() {
@@ -761,11 +755,11 @@ mod test {
         let store = FsStore::open(&dir, ()).unwrap();
         let mut vec = HugeVec::<u8, _, 1>::new(store).unwrap();
 
-        for _ in 0..(CHUNK_CACHE_RECLAMATION_INTERVAL * 10) {
+        for _ in 0..(READAHEAD_COUNT * 100) {
             vec.push(42).unwrap();
 
             let num_dirty_chunks = vec.chunk_cache.borrow().dirty_chunk_count();
-            assert!(num_dirty_chunks < 2);
+            assert!(num_dirty_chunks < 4);
         }
     }
 
@@ -809,14 +803,16 @@ mod test {
             writebacks: AtomicU64::new(0),
         });
         let fs_store = FsStore::open(&dir, Arc::clone(&recorder)).unwrap();
-        let mut vec = HugeVec::<u8, _, 4>::new(fs_store).unwrap();
+        const CHUNK_SZ: usize = 4;
+        let mut vec = HugeVec::<u8, _, CHUNK_SZ>::new(fs_store).unwrap();
 
-        for _ in 0..(CHUNK_CACHE_RECLAMATION_INTERVAL * 4 * 3) {
+        const ITER_MUL: usize = 128;
+        for _ in 0..(READAHEAD_COUNT * ITER_MUL * CHUNK_SZ) {
             vec.push(42).unwrap();
         }
 
         // both metadata and data use wrap_writer, so we must divide by 2
-        let no_writebacks = recorder.writebacks.load(Ordering::Acquire) / 2;
-        assert!(no_writebacks < CHUNK_CACHE_RECLAMATION_INTERVAL as u64 * 3);
+        let num_writebacks = recorder.writebacks.load(Ordering::Acquire) / 2;
+        assert!((num_writebacks as usize) < READAHEAD_COUNT * ITER_MUL);
     }
 }

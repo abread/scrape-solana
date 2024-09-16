@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::BTreeMap, fmt::Debug, rc::Rc};
 
 use super::{
     prefetch_storage::{FetchReq, PrefetchableStore},
-    Chunk, IndexedStorage, CHUNK_CACHE_RECLAMATION_INTERVAL,
+    Chunk, IndexedStorage,
 };
 use std::{
     borrow::Borrow,
@@ -21,7 +21,7 @@ where
     clock: u64,
 }
 
-const READAHEAD_COUNT: usize = 8;
+pub(super) const READAHEAD_COUNT: usize = 8;
 
 impl<T, Store, const CHUNK_SZ: usize> ChunkCache<T, Store, CHUNK_SZ>
 where
@@ -46,9 +46,7 @@ where
         chunk_idx: usize,
     ) -> Result<Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>, Store::Error> {
         self.writeback_oldest_dirty()?;
-        if self.cached_chunks.len() % CHUNK_CACHE_RECLAMATION_INTERVAL == 0
-            && !self.cached_chunks.is_empty()
-        {
+        if self.cached_chunks.len() % READAHEAD_COUNT == 0 && !self.cached_chunks.is_empty() {
             self.gc();
         }
         let use_time = self.clock_tick();
@@ -150,11 +148,17 @@ where
     }
 
     fn writeback_oldest_dirty(&mut self) -> Result<(), Store::Error> {
+        let wb_threshold = if self.cached_chunks.len() < 2 * READAHEAD_COUNT {
+            CHUNK_SZ as u64
+        } else {
+            2
+        };
+
         if let Some((chunk_idx, (oldest_dirty, _))) = self
             .cached_chunks
             .iter()
             .filter(|(_, (cached_chunk, last_used))| {
-                self.clock - last_used >= CHUNK_SZ as u64 && Rc::strong_count(cached_chunk) == 1
+                self.clock - last_used > wb_threshold && Rc::strong_count(cached_chunk) == 1
             })
             .filter(|(_, (cached_chunk, _))| {
                 let c = RefCell::borrow(cached_chunk);
@@ -184,12 +188,11 @@ where
         removable_chunks
             .sort_unstable_by(|(_, a_last_used), (_, b_last_used)| b_last_used.cmp(a_last_used));
 
-        let max_removed = removable_chunks.len() / 2;
         let mut removed_chunks = false;
         for chunk_idx in removable_chunks
             .into_iter()
             .map(|(idx, _)| idx)
-            .take(max_removed)
+            .take(self.cached_chunks.len().saturating_sub(READAHEAD_COUNT + 1))
         {
             let removed = self.cached_chunks.remove(&chunk_idx);
             removed_chunks = true;
