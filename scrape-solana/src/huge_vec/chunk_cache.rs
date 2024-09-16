@@ -21,7 +21,7 @@ where
     clock: u64,
 }
 
-pub(super) const READAHEAD_COUNT: usize = 8;
+pub(super) const READAHEAD_COUNT: usize = 4;
 
 impl<T, Store, const CHUNK_SZ: usize> ChunkCache<T, Store, CHUNK_SZ>
 where

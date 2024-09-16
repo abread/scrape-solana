@@ -10,7 +10,7 @@ use std::{
     },
 };
 
-static PREFETCH_THREADPOOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+pub static PREFETCH_THREADPOOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     rayon::ThreadPoolBuilder::new()
         .num_threads(0)
         .thread_name(|i| format!("prefetcher-{}", i))

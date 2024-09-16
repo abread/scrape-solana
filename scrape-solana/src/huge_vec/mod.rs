@@ -15,7 +15,9 @@ mod storage;
 pub use chunk::Chunk;
 use chunk_cache::{CachedChunk, ChunkCache};
 pub use io_transformer::{IOTransformer, ZstdTransformer};
+pub use prefetch_storage::PREFETCH_THREADPOOL;
 pub use storage::{FsStore, FsStoreError, IndexedStorage};
+
 pub struct HugeVec<T, Store, const CHUNK_SZ: usize = 4096>
 where
     T: Debug + Send + 'static,
@@ -753,9 +755,9 @@ mod test {
     fn constant_seq_write_memuse() {
         let dir = tempdir::TempDir::new("constant_seq_write_memuse").unwrap();
         let store = FsStore::open(&dir, ()).unwrap();
-        let mut vec = HugeVec::<u8, _, 1>::new(store).unwrap();
+        let mut vec = HugeVec::<u8, _, 2>::new(store).unwrap();
 
-        for _ in 0..(READAHEAD_COUNT * 100) {
+        for _ in 0..(READAHEAD_COUNT * 2 * 100) {
             vec.push(42).unwrap();
 
             let num_dirty_chunks = vec.chunk_cache.borrow().dirty_chunk_count();

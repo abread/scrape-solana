@@ -4,7 +4,7 @@ use std::{
     sync::mpsc::{sync_channel, Receiver, SyncSender},
 };
 
-use crate::model::Block;
+use crate::{huge_vec::PREFETCH_THREADPOOL, model::Block};
 
 use super::{check_rebuild_block, MonotonousBlockDb};
 
@@ -56,7 +56,7 @@ impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
                 .and_then(|(block_rec, txs)| check_rebuild_block(block_rec, txs))
         };
 
-        for i in 0..rayon::current_num_threads() {
+        for i in 1..=PREFETCH_THREADPOOL.current_num_threads() / 2 {
             let idx = if direction > 0 {
                 idx + i as u64
             } else {
@@ -84,7 +84,7 @@ impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
         match self.db.get_block_unchecked(idx) {
             Ok((block_rec, txs)) => {
                 let block_tx = self.block_tx.clone();
-                rayon::spawn(move || {
+                PREFETCH_THREADPOOL.spawn(move || {
                     let block = check_rebuild_block(block_rec, txs);
                     let _ = block_tx.send((idx, block));
                 });
