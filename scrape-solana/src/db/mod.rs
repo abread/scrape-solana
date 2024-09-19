@@ -6,6 +6,7 @@ use crate::{
     select_random_elements,
 };
 use eyre::{eyre, WrapErr};
+use std::collections::BTreeSet;
 use std::{
     io::{self, Write},
     path::{Path, PathBuf},
@@ -746,19 +747,13 @@ impl<
 
         hasher.update(&self.account_records.len().to_le_bytes());
 
-        for account_idx in 0..self.account_records.len().saturating_sub(1) {
-            if self
-                .account_records
-                .get(account_idx)
-                .map(|r| r.is_endcap())
-                .unwrap_or(false)
-            {
-                continue;
-            }
+        let account_csums: BTreeSet<_> = (0..self.account_records.len().saturating_sub(1))
+            .filter_map(|idx| self.get_account_by_idx(idx).ok())
+            .map(|acc| checksum(&acc))
+            .collect();
 
-            if let Ok(account) = self.get_account_by_idx(account_idx) {
-                hasher.update(&checksum(&account).to_le_bytes());
-            }
+        for account_csum in account_csums {
+            hasher.update(&account_csum.to_le_bytes());
         }
 
         hasher.finalize()
