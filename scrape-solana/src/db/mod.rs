@@ -674,6 +674,51 @@ impl<
         Ok(())
     }
 
+    pub fn discard_after_corrupted(&mut self) -> eyre::Result<(u64, u64)> {
+        let (discarded_left, discarded_right) = rayon::join(
+            || self.left.discard_after_corrupted(),
+            || self.right.discard_after_corrupted(),
+        );
+        let discarded_left = discarded_left?;
+        let discarded_right = discarded_right?;
+
+        let discarded_acc = self.accounts_discard_after_corrupted()?;
+
+        Ok((discarded_left + discarded_right, discarded_acc))
+    }
+
+    pub fn accounts_discard_after_corrupted(&mut self) -> eyre::Result<u64> {
+        let old_len = self.account_records.len().saturating_sub(1);
+        for idx in 0..old_len {
+            if let Err(e) = self.get_account_by_idx(idx) {
+                eprintln!("truncating accounts, failed to get account record at {idx}: {e:?}");
+                self.truncate_accounts(idx)?;
+                return Ok(old_len.saturating_sub(idx.saturating_sub(1)));
+            }
+        }
+
+        Ok(0)
+    }
+
+    fn truncate_accounts(&mut self, new_len: u64) -> eyre::Result<()> {
+        if new_len + 1 >= self.account_records.len() {
+            return Ok(());
+        }
+
+        self.account_records.truncate(new_len + 1)?;
+
+        // replace endcap
+        let mut last_block = self.account_records.get_mut(new_len)?;
+        let new_endcap = AccountRecord::endcap(last_block.data_start_idx);
+        *last_block = new_endcap;
+        let new_endcap = last_block;
+
+        // truncate account data
+        self.account_data.truncate(new_endcap.data_start_idx)?;
+
+        Ok(())
+    }
+
     pub fn accounts(&self) -> AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS> {
         AccountIter::new(self)
     }

@@ -230,7 +230,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         let block_txs_count = self
             .block_records
             .get(idx + 1)
-            .wrap_err("failed to get account data size (from next record)")?
+            .wrap_err("failed to get block tx count (from next record)")?
             .txs_start_idx
             - record.txs_start_idx;
 
@@ -246,6 +246,41 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         };
 
         Ok((record.to_owned(), txs))
+    }
+
+    pub fn discard_after_corrupted(&mut self) -> eyre::Result<u64> {
+        for idx in 0..self.block_records.len().saturating_sub(1) {
+            if self
+                .get_block_unchecked(idx)
+                .and_then(|(block_rec, txs)| check_rebuild_block(block_rec, txs))
+                .is_err()
+            {
+                let prev_len = self.block_records.len().saturating_sub(1);
+                self.truncate(idx)?;
+                return Ok(prev_len.saturating_sub(idx.saturating_sub(1)));
+            }
+        }
+
+        Ok(0)
+    }
+
+    fn truncate(&mut self, new_len: u64) -> eyre::Result<()> {
+        if new_len + 1 >= self.block_records.len() {
+            return Ok(());
+        }
+
+        self.block_records.truncate(new_len + 1)?;
+
+        // replace endcap
+        let mut last_block = self.block_records.get_mut(new_len)?;
+        let new_endcap = BlockRecord::endcap(last_block.txs_start_idx);
+        *last_block = new_endcap;
+        let new_endcap = last_block;
+
+        // truncate txs
+        self.txs.truncate(new_endcap.txs_start_idx)?;
+
+        Ok(())
     }
 
     pub fn blocks(&self) -> BlockIter<'_, BCS, TXCS> {

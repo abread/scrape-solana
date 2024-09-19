@@ -11,7 +11,7 @@ use eyre::{eyre, WrapErr};
 use itertools::Itertools;
 
 use crate::{
-    db,
+    db::{self, DbSlotLimits},
     model::Block,
     solana_api::{self, SolanaApi},
 };
@@ -182,10 +182,30 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
 ) -> eyre::Result<()> {
     let mut stored_blocks = db.blocks().filter_map(|b| b.ok()).peekable();
 
+    let healed_limits = read_limits(&db_tx)?;
+    let already_healed = |slot: u64| -> bool {
+        healed_limits
+            .left_slot
+            .map(|ls| ls <= slot && slot <= healed_limits.middle_slot)
+            .unwrap_or(false)
+            || healed_limits
+                .right_slot
+                .map(|rs| healed_limits.middle_slot < slot && slot <= rs)
+                .unwrap_or(false)
+    };
+
     for slot_chunk in slots.chunks(db::DB_PARAMS.block_rec_cs).into_iter() {
         'filler_loop: for slot in slot_chunk {
             if let Ok(DBFullHealerOperation::Cancel) = cancel_rx.try_recv() {
                 return Err(eyre!("Heal cancelled"));
+            }
+
+            if already_healed(slot) {
+                // skip this one
+                if stored_blocks.peek().map(|b| b.slot) == Some(slot) {
+                    let _ = stored_blocks.next();
+                }
+                continue;
             }
 
             let block = if stored_blocks.peek().map(|b| b.slot) == Some(slot) {
@@ -231,4 +251,12 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
     }
 
     Ok(())
+}
+
+fn read_limits(db_tx: &SyncSender<DbOperation>) -> eyre::Result<DbSlotLimits> {
+    let (tx, rx) = sync_channel(1);
+    db_tx
+        .send(DbOperation::ReadLimits { reply: tx })
+        .map_err(|_| eyre!("db closed"))?;
+    rx.recv().map_err(|_| eyre!("db closed"))
 }

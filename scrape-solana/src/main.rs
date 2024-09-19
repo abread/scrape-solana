@@ -8,7 +8,7 @@ use scrape_solana::{
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
-    path::{Path, PathBuf},
+    path::PathBuf,
     str::FromStr,
     sync::Arc,
 };
@@ -336,22 +336,26 @@ fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
     let old_db = db::open(args.db_root_path.clone(), std::io::stdout())?;
     let middle_slot = old_db.slot_limits()?.middle_slot;
 
-    println!("creating new db in temporary directory");
-    let new_path = tempfile::tempdir_in(args.db_root_path.parent().unwrap_or(Path::new("..")))?;
+    println!("creating new db");
+    let new_path = args.db_root_path.join("full-heal");
     {
-        let mut new_db = db::open_or_create(
-            new_path.path().to_owned(),
-            || middle_slot,
-            std::io::stdout(),
-        )?;
+        let mut new_db =
+            db::open_or_create(new_path.to_owned(), || middle_slot, std::io::stdout())?;
+        new_db.sync()?;
+
+        eprintln!(
+            "discarding corrupted data from new db from previous full-heal attempts (if any)"
+        );
+        let (discarded_blocks, discarded_accounts) = new_db.discard_after_corrupted()?;
+        eprintln!(" -> discarded {discarded_blocks} blocks and {discarded_accounts} accounts");
+
         new_db.sync()?;
     }
 
     println!("copying data from old db where possible, filling in the gaps from the network");
 
     let api = Arc::new(SolanaApi::new(args.endpoint_url.clone()));
-    let (db_tx, db_handle) =
-        actors::spawn_db_actor(new_path.path().to_owned(), move || middle_slot);
+    let (db_tx, db_handle) = actors::spawn_db_actor(new_path.to_owned(), move || middle_slot);
     let (_, block_handler_tx, block_handler_handle, block_converter_handle) =
         actors::spawn_block_handler(Arc::clone(&api), db_tx.clone());
     let (healer_tx, healer_handle) = actors::spawn_db_full_healer(
@@ -383,12 +387,19 @@ fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
     println!("done copying data");
 
     println!("renaming old db to temp path and new db to final path");
-    let old_path = args.db_root_path.as_path().with_extension(".old");
+    let old_path = args.db_root_path.as_path().with_extension({
+        let mut ext = args
+            .db_root_path
+            .extension()
+            .map(|r| r.to_owned())
+            .unwrap_or_default();
+        ext.push(".old");
+        ext
+    });
     std::fs::rename(&args.db_root_path, &old_path)
         .wrap_err("failed to rename old DB to temporary path")?;
-    std::fs::rename(&new_path, &args.db_root_path)
+    std::fs::rename(old_path.join("full-heal"), &args.db_root_path)
         .wrap_err("failed to rename new DB to final path")?;
-    std::mem::forget(new_path); // do not remove!
 
     println!("db moved to final path, removing old db");
     std::fs::remove_dir_all(old_path).wrap_err("failed to remove old DB")?;
