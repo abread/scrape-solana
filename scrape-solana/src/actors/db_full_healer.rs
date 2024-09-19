@@ -149,7 +149,7 @@ fn db_full_healer_actor(
             .expect("failed to spawn block fetcher actor thread")
     };
 
-    let cancel_handle = std::thread::Builder::new()
+    let _cancel_handle = std::thread::Builder::new()
         .name("db-heal-cancel".to_owned())
         .spawn(move || {
             if let Ok(DBFullHealerOperation::Cancel) = rx.recv() {
@@ -165,7 +165,10 @@ fn db_full_healer_actor(
     left_thread_handle
         .join()
         .expect("left db healer thread panicked")?;
-    cancel_handle.join().expect("healer cancel thread panicked");
+
+    // don't call _cancel_handle.join() or you will deadlock joining the full heal thread until the
+    // cancel channel tx is dropped (hard if it's inside a Ctrl-C handler)
+
     Ok(())
 }
 
