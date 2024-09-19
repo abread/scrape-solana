@@ -354,17 +354,23 @@ where
         // must execute after all pending stores finish to avoid overwrites
         self.sync()?;
 
+        // remove old objects
         let old_len = self.metadata.len;
+        for idx in new_len..old_len {
+            let path = self.index_path(idx);
+            match fs::remove_file(path) {
+                Ok(_) => Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
+            }
+            .map_err(FsStoreError::DataRemove)?;
+        }
 
+        // update len
         self.metadata.len = new_len;
         // Note: safe to write without lock because there are no concurrent async writes
         // we called sync() and are holding a &mut reference to Self
         self.metadata.write_to(&*self.root, &*self.io_transformer)?;
-
-        for idx in new_len..old_len {
-            let path = self.index_path(idx);
-            fs::remove_file(path).map_err(FsStoreError::DataRemove)?;
-        }
 
         Ok(())
     }
