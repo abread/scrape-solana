@@ -30,10 +30,16 @@ where
 #[derive(thiserror::Error, Debug)]
 pub enum HugeVecError<StoreErr> {
     #[error("Error in chunk storage")]
-    StorageError(#[from] StoreErr),
+    Storage(#[from] StoreErr),
 
     #[error("Access out of bounds")]
-    OutOfBoundsError { len: u64, idx: u64 },
+    OutOfBoundsAccess { len: u64, idx: u64 },
+
+    #[error("Out of bounds access: chunk corrupted")]
+    ChunkCorrupted {
+        chunk_len: usize,
+        access_offset: usize,
+    },
 }
 
 impl<T, Store, const CHUNK_SZ: usize> HugeVec<T, Store, CHUNK_SZ>
@@ -394,7 +400,7 @@ where
         idx: u64,
     ) -> Result<ItemRef<'r, T, T, CHUNK_SZ>, HugeVecError<Store::Error>> {
         if idx >= self.len {
-            return Err(HugeVecError::OutOfBoundsError { len: self.len, idx });
+            return Err(HugeVecError::OutOfBoundsAccess { len: self.len, idx });
         }
 
         let chunk_idx = (idx / CHUNK_SZ as u64) as usize;
@@ -409,8 +415,16 @@ where
         let chunk_indef_ref: &'s RefCell<CachedChunk<T, CHUNK_SZ>> =
             unsafe { std::mem::transmute(chunk_indef_ref) };
 
-        let item_ref = Ref::map(chunk_indef_ref.borrow(), |c| &c[chunk_offset]);
+        // chunk may be corrupted
+        let chunk_len = chunk_indef_ref.borrow().len();
+        if chunk_offset >= chunk_len {
+            return Err(HugeVecError::ChunkCorrupted {
+                chunk_len,
+                access_offset: chunk_offset,
+            });
+        }
 
+        let item_ref = Ref::map(chunk_indef_ref.borrow(), |c| &c[chunk_offset]);
         Ok(ItemRef { chunk_rc, item_ref })
     }
 
@@ -419,7 +433,7 @@ where
         idx: u64,
     ) -> Result<ItemRefMut<'r, T, T, CHUNK_SZ>, HugeVecError<Store::Error>> {
         if idx >= self.len {
-            return Err(HugeVecError::OutOfBoundsError { len: self.len, idx });
+            return Err(HugeVecError::OutOfBoundsAccess { len: self.len, idx });
         }
 
         let chunk_idx = (idx / CHUNK_SZ as u64) as usize;
@@ -433,6 +447,17 @@ where
         let chunk_indef_ref: &'_ RefCell<CachedChunk<T, CHUNK_SZ>> = &chunk_rc;
         let chunk_indef_ref: &'s RefCell<CachedChunk<T, CHUNK_SZ>> =
             unsafe { std::mem::transmute(chunk_indef_ref) };
+
+        // chunk may be corrupted
+        {
+            let chunk_len = chunk_indef_ref.borrow().len();
+            if chunk_offset >= chunk_len {
+                return Err(HugeVecError::ChunkCorrupted {
+                    chunk_len,
+                    access_offset: chunk_offset,
+                });
+            }
+        }
 
         let item_ref = RefMut::map(chunk_indef_ref.borrow_mut(), |c| &mut c[chunk_offset]);
 
@@ -495,7 +520,7 @@ where
     fn get_mut(&mut self, idx: usize) -> Option<Self::RefMut<'_>> {
         match self.get_mut(idx as u64) {
             Ok(x) => Some(x),
-            Err(HugeVecError::OutOfBoundsError { .. }) => None,
+            Err(HugeVecError::OutOfBoundsAccess { .. }) => None,
             Err(e) => panic!("{e:#?}"),
         }
     }
@@ -503,7 +528,7 @@ where
     fn map_get_mut(self, idx: usize) -> Option<Self::RefMut<'s>> {
         match self.map_get_mut(idx as u64) {
             Ok(x) => Some(x),
-            Err(HugeVecError::OutOfBoundsError { .. }) => None,
+            Err(HugeVecError::OutOfBoundsAccess { .. }) => None,
             Err(e) => panic!("{e:#?}"),
         }
     }
@@ -589,7 +614,7 @@ where
     fn get(&self, idx: usize) -> Option<Self::Ref<'_>> {
         match self.deref().get(idx as u64) {
             Ok(x) => Some(x),
-            Err(HugeVecError::OutOfBoundsError { .. }) => None,
+            Err(HugeVecError::OutOfBoundsAccess { .. }) => None,
             Err(e) => panic!("{e:#?}"),
         }
     }
@@ -597,7 +622,7 @@ where
     fn map_get(self, idx: usize) -> Option<Self::Ref<'s>> {
         match self.map_get(idx as u64) {
             Ok(x) => Some(x),
-            Err(HugeVecError::OutOfBoundsError { .. }) => None,
+            Err(HugeVecError::OutOfBoundsAccess { .. }) => None,
             Err(e) => panic!("{e:#?}"),
         }
     }
