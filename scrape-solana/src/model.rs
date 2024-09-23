@@ -71,7 +71,7 @@ impl TryFrom<solana_transaction_status::EncodedTransactionWithStatusMeta> for Tx
         Ok(Self {
             version: tx.version.into(),
             fee: meta.fee,
-            compute_units: meta.compute_units_consumed.unwrap_or(0),
+            compute_units: Into::<Option<_>>::into(meta.compute_units_consumed).unwrap_or(0),
             payload,
         })
     }
