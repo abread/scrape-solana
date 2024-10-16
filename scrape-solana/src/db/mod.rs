@@ -294,6 +294,8 @@ pub struct DbSlotLimits {
     pub middle_slot: u64,
     pub left_slot: Option<u64>,
     pub right_slot: Option<u64>,
+    pub left_ts: Option<i64>,
+    pub right_ts: Option<i64>,
 }
 
 impl<
@@ -725,10 +727,15 @@ impl<
     }
 
     pub fn slot_limits(&self) -> eyre::Result<DbSlotLimits> {
+        let left_rec = self.left.block_records.second_last()?;
+        let right_rec = self.right.block_records.second_last()?;
+
         Ok(DbSlotLimits {
             middle_slot: self.middle_slot,
-            left_slot: self.left.block_records.second_last()?.map(|r| r.slot),
-            right_slot: self.right.block_records.second_last()?.map(|r| r.slot),
+            left_slot: left_rec.as_ref().map(|r| r.slot),
+            right_slot: right_rec.as_ref().map(|r| r.slot),
+            left_ts: left_rec.and_then(|r| r.ts),
+            right_ts: right_rec.and_then(|r| r.ts),
         })
     }
 

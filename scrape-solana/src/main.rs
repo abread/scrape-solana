@@ -55,9 +55,9 @@ struct ScrapeArgs {
     #[arg(short, long, default_value = "1:0")]
     shard_config: ShardConfig,
 
-    /// Chance of trying to fetch a block ahead of the middle slot when block timestamps are unavailable.
+    /// UNUSED: Chance of trying to fetch a block ahead of the middle slot.
     #[arg(short, long, default_value = "0.01")]
-    fallback_forward_fetch_chance: f64,
+    forward_fetch_chance: f64,
 }
 
 #[derive(clap::Args)]
@@ -145,13 +145,8 @@ fn scrape(args: ScrapeArgs) -> Result<()> {
         actors::spawn_db_actor(args.db_root_path, default_middle_slot_getter_builder());
     let (block_handler_tx, _, block_handler_handle, block_converter_handle) =
         actors::spawn_block_handler(Arc::clone(&api), db_tx.clone());
-    let (block_fetcher_tx, block_fetcher_handle) = actors::spawn_block_fetcher(
-        args.fallback_forward_fetch_chance,
-        args.shard_config.n,
-        api,
-        block_handler_tx,
-        db_tx,
-    );
+    let (block_fetcher_tx, block_fetcher_handle) =
+        actors::spawn_block_fetcher(args.shard_config.n, api, block_handler_tx, db_tx);
 
     ctrlc::set_handler(move || {
         println!("received stop signal");

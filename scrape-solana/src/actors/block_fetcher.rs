@@ -23,7 +23,6 @@ pub enum BlockFetcherOperation {
 }
 
 pub fn spawn_block_fetcher(
-    fallback_forward_chance: f64,
     step: u64,
     api: Arc<SolanaApi>,
     block_handler_tx: SyncSender<(u64, UiConfirmedBlock)>,
@@ -35,22 +34,15 @@ pub fn spawn_block_fetcher(
     let (tx, rx) = sync_channel(1);
     let handle = std::thread::Builder::new()
         .name("block_fetcher".to_owned())
-        .spawn(move || {
-            match block_fetcher_actor(
-                fallback_forward_chance,
-                step,
-                rx,
-                api,
-                block_handler_tx,
-                db_tx,
-            ) {
+        .spawn(
+            move || match block_fetcher_actor(step, rx, api, block_handler_tx, db_tx) {
                 Ok(x) => Ok(x),
                 Err(e) => {
                     eprintln!("block fetcher actor failed: {e}");
                     Err(e)
                 }
-            }
-        })
+            },
+        )
         .expect("failed to spawn block fetcher actor thread");
     (tx, handle)
 }
@@ -74,7 +66,6 @@ const FETCH_BACK_THRESH: Duration = Duration::from_secs(60 * 60); // 1h
 const FETCH_FORWARD_THRESH: Duration = Duration::from_secs(60 * 60 * 24); // 1d
 
 fn block_fetcher_actor(
-    fallback_forward_chance: f64,
     step: u64,
     rx: Receiver<BlockFetcherOperation>,
     api: Arc<SolanaApi>,
@@ -99,7 +90,7 @@ fn block_fetcher_actor(
         .unwrap_or(limits.middle_slot + step);
 
     // will be updated to keep data 1h~1day behind network tip
-    let mut forward_chance = fallback_forward_chance;
+    let mut forward_chance = 1.0;
     let mut last_right_block_ts = chrono::Utc::now(); // assume latest block is from now
 
     loop {
@@ -155,8 +146,8 @@ fn block_fetcher_actor(
 
         // update slot
         match side {
-            Side::Left => right_slot = right_slot.saturating_add(step),
-            Side::Right => left_slot = left_slot.saturating_sub(step),
+            Side::Left => left_slot = left_slot.saturating_sub(step),
+            Side::Right => right_slot = right_slot.saturating_add(step),
         }
 
         forward_chance = {
