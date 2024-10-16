@@ -55,9 +55,9 @@ struct ScrapeArgs {
     #[arg(short, long, default_value = "1:0")]
     shard_config: ShardConfig,
 
-    /// Chance of trying to fetch a block ahead of the middle slot.
+    /// Chance of trying to fetch a block ahead of the middle slot when block timestamps are unavailable.
     #[arg(short, long, default_value = "0.01")]
-    forward_fetch_chance: f64,
+    fallback_forward_fetch_chance: f64,
 }
 
 #[derive(clap::Args)]
@@ -146,7 +146,7 @@ fn scrape(args: ScrapeArgs) -> Result<()> {
     let (block_handler_tx, _, block_handler_handle, block_converter_handle) =
         actors::spawn_block_handler(Arc::clone(&api), db_tx.clone());
     let (block_fetcher_tx, block_fetcher_handle) = actors::spawn_block_fetcher(
-        args.forward_fetch_chance,
+        args.fallback_forward_fetch_chance,
         args.shard_config.n,
         api,
         block_handler_tx,
