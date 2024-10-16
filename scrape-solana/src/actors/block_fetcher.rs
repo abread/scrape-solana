@@ -81,7 +81,13 @@ fn block_fetcher_actor(
     block_handler_tx: SyncSender<(u64, UiConfirmedBlock)>,
     db_tx: SyncSender<DbOperation>,
 ) -> eyre::Result<()> {
-    let limits = read_limits(&db_tx)?;
+    let limits = match read_limits(&db_tx) {
+        Ok(limits) => limits,
+        Err(e) => {
+            eprintln!("block fetcher: failed to get db limits: {e}, exiting");
+            return Ok(());
+        }
+    };
 
     let mut left_slot = limits
         .left_slot
