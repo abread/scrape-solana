@@ -114,10 +114,12 @@ impl SolanaApiInner {
                 if self.wait > MIN_WAIT {
                     self.wait -= Duration::from_millis({
                         let delta = self.wait.as_millis() - MIN_WAIT.as_millis();
-                        if delta < 100 {
-                            5
-                        } else {
+                        if delta < 10 {
+                            0
+                        } else if delta < MIN_WAIT.as_millis() * 2 {
                             (delta as f64).sqrt() as u64
+                        } else {
+                            (delta / 2) as u64
                         }
                     });
                     self.wait = self.wait.max(MIN_WAIT);
