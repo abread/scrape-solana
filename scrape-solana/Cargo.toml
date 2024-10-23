@@ -19,9 +19,9 @@ nonmax = { version = "0.5.5", features = ["serde"] }
 rand = "0.8.5"
 rayon = "1.10.0"
 serde = { version = "1.0.203", features = ["derive"] }
-solana-client = "1.18.23"
-solana-sdk = "1.18.23"
-solana-transaction-status = "1.18.23"
+solana-client = "1.18.26"
+solana-sdk = "1.18.26"
+solana-transaction-status = "1.18.26"
 tempfile = "3.12.0"
 thiserror = "1.0.63"
 vector-trees = { path = "../vector-trees", features = ["std", "serde"] }
