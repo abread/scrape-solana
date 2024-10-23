@@ -91,7 +91,10 @@ fn block_fetcher_actor(
 
     // will be updated to keep data 1h~1day behind network tip
     let mut forward_chance = 1.0;
-    let mut last_right_block_ts = chrono::Utc::now(); // assume latest block is from now
+    let mut last_right_block_ts = limits
+        .right_ts
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+        .unwrap_or(chrono::Utc::now());
 
     loop {
         if let Ok(BlockFetcherOperation::Stop) = rx.try_recv() {
