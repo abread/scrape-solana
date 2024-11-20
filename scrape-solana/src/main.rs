@@ -39,6 +39,8 @@ enum Command {
     FullHeal(ScrapeArgs),
     /// Compute a checksum summarizing all data in one or more Solana DBs
     Checksum(StatsArgs),
+    /// Find blocks without timestamp
+    FindBlocksWithoutTs(StatsArgs),
 }
 
 #[derive(clap::Args)]
@@ -86,6 +88,7 @@ fn main() -> Result<()> {
         Command::QuickStats(stats_args) => quickstats(stats_args),
         Command::FullHeal(args) => full_heal(args),
         Command::Checksum(args) => checksum(args),
+        Command::FindBlocksWithoutTs(args) => find_blocks_no_ts(args),
     }
 }
 
@@ -422,6 +425,40 @@ fn checksum(args: StatsArgs) -> eyre::Result<()> {
 
     for (path, maybe_csum) in checksums {
         println!("checksum for {path:?}:\t{maybe_csum:#X?}");
+    }
+
+    Ok(())
+}
+
+fn find_blocks_no_ts(args: StatsArgs) -> eyre::Result<()> {
+    // ensure there are no duplicates
+    let db_paths: HashSet<_> = args.db_paths.into_iter().collect();
+
+    let blocks_no_ts = db_paths
+        .into_par_iter()
+        .map(|db_path| {
+            (
+                db_path.clone(),
+                db::open(db_path.clone(), std::io::stdout())
+                    .wrap_err_with(|| eyre!("failed to open db {db_path:?}"))
+                    .map(|db| {
+                        db.blocks()
+                            .filter_map(|mb| {
+                                let b = mb.expect("corrupted block");
+                                if b.ts.is_none() {
+                                    Some(b.slot)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+            )
+        })
+        .collect::<HashMap<_, eyre::Result<_>>>();
+
+    for (path, maybe_blocks) in blocks_no_ts {
+        println!("blocks (slots) without timestamp in {path:?}:\t{maybe_blocks:#?}");
     }
 
     Ok(())
