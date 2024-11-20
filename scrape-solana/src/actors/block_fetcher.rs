@@ -89,6 +89,9 @@ fn block_fetcher_actor(
         .map(|s| s + step)
         .unwrap_or(limits.middle_slot + step);
 
+    let mut left_attempts = 0;
+    let mut right_attempts = 0;
+
     // will be updated to keep data 1h~1day behind network tip
     let mut forward_chance = 1.0;
     let mut last_right_block_ts = limits
@@ -111,6 +114,29 @@ fn block_fetcher_actor(
             Side::Left => left_slot,
             Side::Right => right_slot,
         };
+
+        // register fetch attempt
+        match side {
+            Side::Left => left_attempts += 1,
+            Side::Right => right_attempts += 1,
+        }
+
+        // if we get stuck, try waiting a long long time, then bail if still stuck
+        {
+            let attempts = match side {
+                Side::Left => left_attempts,
+                Side::Right => right_attempts,
+            };
+
+            if attempts > 10 && attempts < 10 + 60 * 60 / 30 {
+                std::thread::sleep(Duration::from_secs(30));
+                continue;
+            } else if attempts > 10 + 60 * 60 / 30 + 3 {
+                return Err(eyre!(
+                    "block fetcher: stuck at slot {slot} ({side} side), bailing"
+                ));
+            }
+        }
 
         match api.fetch_block(slot) {
             Ok(Some(block)) => {
@@ -140,6 +166,12 @@ fn block_fetcher_actor(
                 db_tx
                     .send(DbOperation::Sync)
                     .map_err(|_| eyre!("db closed"))?;
+
+                // don't count it as a fetch attempt
+                match side {
+                    Side::Left => left_attempts -= 1,
+                    Side::Right => right_attempts -= 1,
+                }
                 continue;
             }
             Err(solana_api::Error::SolanaClient(e)) => {
@@ -151,6 +183,12 @@ fn block_fetcher_actor(
         match side {
             Side::Left => left_slot = left_slot.saturating_sub(step),
             Side::Right => right_slot = right_slot.saturating_add(step),
+        }
+
+        // zero attempt counter
+        match side {
+            Side::Left => left_attempts = 0,
+            Side::Right => right_attempts = 0,
         }
 
         forward_chance = {
