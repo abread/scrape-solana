@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     fmt::{Debug, Display},
+    str::FromStr,
 };
 
 use eyre::{OptionExt, WrapErr};
@@ -158,7 +159,7 @@ impl Debug for TxInstruction {
 const ACCOUNT_ID_LEN: usize = 32;
 
 #[repr(transparent)]
-#[derive(Default, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Default, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 pub struct AccountID([u8; ACCOUNT_ID_LEN]);
 
 impl Display for AccountID {
@@ -183,6 +184,12 @@ impl From<AccountID> for [u8; ACCOUNT_ID_LEN] {
 impl AsRef<[u8]> for AccountID {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+impl FromStr for AccountID {
+    type Err = solana_sdk::pubkey::ParsePubkeyError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        solana_sdk::pubkey::Pubkey::from_str(s).map(|p| p.into())
     }
 }
 

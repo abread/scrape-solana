@@ -3,11 +3,11 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use scrape_solana::{
     actors,
     db::{self, DbStats},
+    model::{AccountID, Tx},
     solana_api::SolanaApi,
 };
 use std::{
-    collections::{HashMap, HashSet},
-    fmt::Debug,
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     str::FromStr,
     sync::Arc,
@@ -41,6 +41,8 @@ enum Command {
     Checksum(StatsArgs),
     /// Find blocks without timestamp
     FindBlocksWithoutTs(StatsArgs),
+    /// Display top N contracts by transaction count or currency volume
+    TopContracts(TopContractsArgs),
 }
 
 #[derive(clap::Args)]
@@ -69,6 +71,48 @@ struct StatsArgs {
     db_paths: Vec<PathBuf>,
 }
 
+#[derive(clap::Args)]
+struct TopContractsArgs {
+    /// Database paths
+    #[arg(default_value = "solana_data_db", num_args(1..))]
+    db_paths: Vec<PathBuf>,
+
+    /// Ranking strategy
+    #[arg(short, long, default_value = "tx_count")]
+    ranking_strategy: ContractRankingStrategy,
+
+    /// Max contracts to analyze
+    #[arg(short = 'c', long, default_value = "25")]
+    max_contracts: usize,
+
+    /// Ignore program from statistics
+    #[arg(long)]
+    ignore_program: Vec<AccountID>,
+
+    /// Consider blocks starting from at least this date/time
+    #[arg(long)]
+    min_date: Option<String>,
+
+    /// Consider blocks until at most this date/time
+    #[arg(long)]
+    max_date: Option<String>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum ContractRankingStrategy {
+    /// Rank by transaction count, considering all transactions that directly call this contract
+    TxCountCoarse,
+
+    /// Rank by number of instructions executed in transactions that directly call this contract
+    InstrCountCoarse,
+
+    /// Rank by compute units consumed in transactions that directly call this contract
+    ComputeUnitsCoarse,
+
+    /// Rank by compute units consumed in transactions that directly call this contract, considering the proportion of contract-calling instructions in the transaction
+    ComputeUnitsCoarseWeighted,
+}
+
 #[derive(Clone, Debug)]
 struct SolanaEndpoint(String);
 
@@ -89,6 +133,7 @@ fn main() -> Result<()> {
         Command::FullHeal(args) => full_heal(args),
         Command::Checksum(args) => checksum(args),
         Command::FindBlocksWithoutTs(args) => find_blocks_no_ts(args),
+        Command::TopContracts(args) => top_contracts(args),
     }
 }
 
@@ -459,6 +504,130 @@ fn find_blocks_no_ts(args: StatsArgs) -> eyre::Result<()> {
 
     for (path, maybe_blocks) in blocks_no_ts {
         println!("blocks (slots) without timestamp in {path:?}:\t{maybe_blocks:#?}");
+    }
+
+    Ok(())
+}
+
+fn top_contracts(args: TopContractsArgs) -> eyre::Result<()> {
+    let ignored_programs: HashSet<AccountID> = HashSet::from_iter(args.ignore_program);
+
+    let min_date = args
+        .min_date
+        .as_ref()
+        .map(|s| {
+            chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
+                .wrap_err("invalid min date")
+                .map(|datetime| datetime.and_utc().timestamp())
+        })
+        .unwrap_or(Ok(0))?;
+    let max_date = args
+        .max_date
+        .as_ref()
+        .map(|s| {
+            chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
+                .wrap_err("invalid max date")
+                .map(|datetime| datetime.and_utc().timestamp())
+        })
+        .unwrap_or(Ok(i64::MAX))?;
+
+    let db_paths: HashSet<_> = args.db_paths.into_iter().collect();
+    let dbs: Vec<_> = db_paths
+        .into_iter()
+        .map(|p| db::open(p, std::io::stdout()))
+        .collect::<Result<_>>()?;
+
+    let value_fn: fn(&Tx, u8) -> u64 = match args.ranking_strategy {
+        ContractRankingStrategy::TxCountCoarse => move |_tx, _contract_idx| 1u64,
+        ContractRankingStrategy::InstrCountCoarse => move |tx, contract_idx| {
+            tx.payload
+                .instrs
+                .iter()
+                .filter(|instr| instr.program_account_idx == contract_idx)
+                .count() as u64
+        },
+        ContractRankingStrategy::ComputeUnitsCoarse => move |tx, _contract_idx| tx.compute_units,
+        ContractRankingStrategy::ComputeUnitsCoarseWeighted => move |tx, contract_idx| {
+            let instr_count = tx.payload.instrs.len() as u64;
+            let contract_instr_count = tx
+                .payload
+                .instrs
+                .iter()
+                .filter(|instr| instr.program_account_idx == contract_idx)
+                .count() as u64;
+            if instr_count > 0 {
+                tx.compute_units * contract_instr_count / instr_count
+            } else {
+                0
+            }
+        },
+    };
+
+    let contract_stats = dbs
+        .into_par_iter()
+        .map(move |db| {
+            db.block_range(min_date, max_date)
+                .flat_map(|b| b.expect("corrupted block").txs.into_iter())
+                .map(|tx| {
+                    tx.payload
+                        .account_table
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .filter(|(_, account_id)| !ignored_programs.contains(account_id))
+                        .map(|(idx, account_id)| (account_id, value_fn(&tx, idx as u8)))
+                        .collect::<HashMap<_, _>>()
+                })
+                .fold(HashMap::default(), |mut acc: HashMap<AccountID, u64>, x| {
+                    for (k, v) in x {
+                        *acc.entry(k).or_insert(0u64) += v;
+                    }
+                    acc
+                })
+        })
+        .reduce(HashMap::default, |mut lhs, mut rhs| {
+            if rhs.capacity() > lhs.capacity() {
+                (lhs, rhs) = (rhs, lhs);
+            }
+
+            for (k, v) in rhs {
+                *lhs.entry(k).or_insert(0) += v;
+            }
+            lhs
+        });
+
+    // sort by value
+    let contract_stats = contract_stats
+        .into_iter()
+        .map(|(id, val)| (val, id))
+        .collect::<BTreeMap<_, _>>();
+
+    println!(
+        "Stats from {} to {}",
+        args.min_date
+            .as_ref()
+            .map(String::as_str)
+            .unwrap_or("<min>"),
+        args.max_date
+            .as_ref()
+            .map(String::as_str)
+            .unwrap_or("<max>")
+    );
+    let rank_label = format!("{:?}", args.ranking_strategy);
+    println!(
+        "                    Account ID                    | {} | %",
+        &rank_label
+    );
+    let total = contract_stats.keys().sum::<u64>();
+    for (val, id) in contract_stats.into_iter().rev().take(args.max_contracts) {
+        let id = format!("{id}");
+        let percent = val as f64 / total as f64 * 100.0;
+        let val = format!("{}", val);
+        println!(
+            "{id}{}  {val}{}   {percent}",
+            " ".repeat(50usize.saturating_sub(id.len())),
+            " ".repeat(rank_label.len().saturating_sub(val.len()))
+        );
     }
 
     Ok(())
