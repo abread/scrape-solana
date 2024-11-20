@@ -1,5 +1,6 @@
 use std::{
     cell::{Ref, RefCell, RefMut},
+    cmp::Ordering,
     fmt::Debug,
     iter::{ExactSizeIterator, FusedIterator},
     ops::{Deref, DerefMut},
@@ -194,6 +195,20 @@ where
     pub fn sync(&mut self) -> Result<(), HugeVecError<Store::Error>> {
         self.chunk_cache.get_mut().sync()?;
         Ok(())
+    }
+
+    pub fn binary_search_by<F>(&self, f: F) -> std::result::Result<u64, u64>
+    where
+        F: FnMut(ItemRef<'_, T, T, CHUNK_SZ>) -> std::cmp::Ordering,
+    {
+        self.slice().binary_search_by(f)
+    }
+
+    pub fn partition_point<P>(&self, pred: P) -> u64
+    where
+        P: FnMut(ItemRef<'_, T, T, CHUNK_SZ>) -> bool,
+    {
+        self.slice().partition_point(pred)
     }
 }
 
@@ -596,6 +611,76 @@ where
         let res: Result<ItemRef<'s, T, T, CHUNK_SZ>, HugeVecError<Store::Error>> =
             unsafe { std::mem::transmute(res) };
         res
+    }
+
+    pub fn binary_search_by<'a, F>(&'a self, mut f: F) -> std::result::Result<u64, u64>
+    where
+        's: 'a,
+        F: FnMut(ItemRef<'a, T, T, CHUNK_SZ>) -> std::cmp::Ordering,
+    {
+        // Implementation copied from Rust source code ([T]::binary_search_by)
+        let mut size = self.len;
+        if size == 0 {
+            return Err(0);
+        }
+        let mut base = 0u64;
+
+        // This loop intentionally doesn't have an early exit if the comparison
+        // returns Equal. We want the number of loop iterations to depend *only*
+        // on the size of the input slice so that the CPU can reliably predict
+        // the loop count.
+        while size > 1 {
+            let half = size / 2;
+            let mid = base + half;
+
+            // SAFETY: the call is made safe by the following inconstants:
+            // - `mid >= 0`: by definition
+            // - `mid < size`: `mid = size / 2 + size / 4 + size / 8 ...`
+            let cmp = f(self.get(mid).expect("corrupted hugevec chunk"));
+
+            // TODO: force compiler to use conditional moves when supported like [T]::binary_search_by
+            // this currently relies on core::intrinsics::select_unpredictable
+            base = if cmp == Ordering::Greater { base } else { mid };
+
+            // This is imprecise in the case where `size` is odd and the
+            // comparison returns Greater: the mid element still gets included
+            // by `size` even though it's known to be larger than the element
+            // being searched for.
+            //
+            // This is fine though: we gain more performance by keeping the
+            // loop iteration count invariant (and thus predictable) than we
+            // lose from considering one additional element.
+            size -= half;
+        }
+
+        // SAFETY: base is always in [0, size) because base <= mid.
+        let cmp = f(self.get(base).expect("corrupted hugevec chunk"));
+        if cmp == Ordering::Equal {
+            // SAFETY: same as the `get_unchecked` above.
+            unsafe { std::hint::assert_unchecked(base < self.len) };
+            Ok(base)
+        } else {
+            let result = base + (cmp == Ordering::Less) as u64;
+            // SAFETY: same as the `get_unchecked` above.
+            // Note that this is `<=`, unlike the assume in the `Ok` path.
+            unsafe { std::hint::assert_unchecked(result <= self.len) };
+            Err(result)
+        }
+    }
+
+    pub fn partition_point<'a, P>(&'s self, mut pred: P) -> u64
+    where
+        's: 'a,
+        P: FnMut(ItemRef<'a, T, T, CHUNK_SZ>) -> bool,
+    {
+        self.binary_search_by(|x| {
+            if pred(x) {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        })
+        .unwrap_or_else(|i| i)
     }
 }
 
