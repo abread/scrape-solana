@@ -16,7 +16,10 @@ pub struct BlockIter<'db, const BCS: usize, const TXCS: usize> {
     block_rx: Receiver<(u64, eyre::Result<Block>)>,
     idx: u64,
     idx_back: u64,
+    min_idx: u64,
+    max_idx: u64,
 }
+
 impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
     pub(super) fn new(db: &'db MonotonousBlockDb<BCS, TXCS>) -> Self {
         let (block_tx, block_rx) = sync_channel(2 * rayon::current_num_threads());
@@ -28,7 +31,41 @@ impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
             block_rx,
             idx: 0,
             idx_back: db.block_records.len().saturating_sub(1),
+            min_idx: 0,
+            max_idx: db.block_records.len().saturating_sub(1),
         }
+    }
+
+    pub(super) fn new_range(db: &'db MonotonousBlockDb<BCS, TXCS>, start: u64, end: u64) -> Self {
+        let (block_tx, block_rx) = sync_channel(2 * rayon::current_num_threads());
+
+        let end = end.min(db.block_records.len().saturating_sub(1));
+        let start = start.min(end);
+
+        Self {
+            db,
+            pending_blocks: HashSet::new(),
+            cache: HashMap::new(),
+            block_tx,
+            block_rx,
+            idx: start,
+            idx_back: end,
+            min_idx: start,
+            max_idx: end,
+        }
+    }
+
+    pub fn skip(mut self, n: u64) -> Self {
+        let n = n.min(self.max_idx - self.idx);
+        self.idx += n;
+        self.min_idx += n;
+        self
+    }
+
+    pub fn take(mut self, n: u64) -> Self {
+        let n = n.min(self.max_idx - self.idx);
+        self.max_idx = (self.min_idx + n).min(self.max_idx);
+        self
     }
 
     fn get_block(&mut self, idx: u64, direction: i8) -> eyre::Result<Block> {
@@ -60,10 +97,15 @@ impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
             let idx = if direction > 0 {
                 idx + i as u64
             } else {
+                if idx < i as u64 {
+                    continue;
+                }
                 idx - i as u64
             };
 
-            self.prefetch(idx);
+            if idx < self.max_idx && idx > self.min_idx {
+                self.prefetch(idx);
+            }
         }
 
         block
@@ -101,19 +143,18 @@ impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
 impl<'db, const BCS: usize, const TXCS: usize> Iterator for BlockIter<'db, BCS, TXCS> {
     type Item = eyre::Result<Block>;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx >= self.db.block_records.len().saturating_sub(1) {
+        if self.idx >= self.max_idx {
             None
         } else {
-            while self.idx < self.db.block_records.len().saturating_sub(1)
-                && self
-                    .db
+            assert!(
+                self.db
                     .block_records
                     .get(self.idx)
                     .map(|r| r.is_endcap())
-                    .unwrap_or(false)
-            {
-                self.idx += 1;
-            }
+                    .expect("bad block record")
+                    == false,
+                "corrupted block records"
+            );
 
             let block = self.get_block(self.idx, 1);
             self.idx += 1;
@@ -122,7 +163,7 @@ impl<'db, const BCS: usize, const TXCS: usize> Iterator for BlockIter<'db, BCS, 
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.db.block_records.len().saturating_sub(2) as usize;
+        let len = (self.max_idx - self.min_idx) as usize;
         (len, Some(len))
     }
 
@@ -136,32 +177,21 @@ impl<'db, const BCS: usize, const TXCS: usize> Iterator for BlockIter<'db, BCS, 
 
 impl<'db, const BCS: usize, const TXCS: usize> DoubleEndedIterator for BlockIter<'db, BCS, TXCS> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.idx_back == 0 {
+        if self.idx_back <= self.min_idx {
             None
         } else {
             self.idx_back -= 1;
 
-            while self.idx > 0
-                && self
-                    .db
+            assert!(
+                self.db
                     .block_records
-                    .get(self.idx)
+                    .get(self.idx_back)
                     .map(|r| r.is_endcap())
-                    .unwrap_or(false)
-            {
-                self.idx -= 1;
-            }
-            if self
-                .db
-                .block_records
-                .get(self.idx)
-                .map(|r| r.is_endcap())
-                .unwrap_or(false)
-            {
-                None
-            } else {
-                Some(self.get_block(self.idx_back, -1))
-            }
+                    .expect("bad block record")
+                    == false,
+                "corrupted block records"
+            );
+            Some(self.get_block(self.idx_back, -1))
         }
     }
 }

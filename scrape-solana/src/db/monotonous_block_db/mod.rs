@@ -287,6 +287,23 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         BlockIter::new(self)
     }
 
+    pub fn block_range(&self, start_ts: i64, end_ts: i64) -> BlockIter<'_, BCS, TXCS> {
+        if self.block_records.len() == 1 {
+            return self.blocks();
+        }
+
+        let start_idx = self
+            .block_records
+            .partition_point(|br| br.is_endcap() || br.ts.unwrap() < start_ts)
+            .min(self.block_records.len().saturating_sub(2));
+        let end_idx = self
+            .block_records
+            .partition_point(|br| !br.is_endcap() && br.ts.unwrap() <= end_ts)
+            .min(self.block_records.len().saturating_sub(1));
+
+        BlockIter::new_range(self, start_idx, end_idx)
+    }
+
     fn guess_shard_config(&self, problems: &mut Vec<String>) -> Option<(u64, u64)> {
         let mut slot_diffs = HashMap::new();
 

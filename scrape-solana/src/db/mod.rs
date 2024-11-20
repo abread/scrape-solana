@@ -798,6 +798,17 @@ impl<
         self.left_blocks().chain(self.right_blocks())
     }
 
+    pub fn block_range(
+        &self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> std::iter::Chain<std::iter::Rev<BlockIter<'_, BCS, TXCS>>, BlockIter<'_, BCS, TXCS>> {
+        self.left
+            .block_range(start_ts, end_ts)
+            .rev()
+            .chain(self.right.block_range(start_ts, end_ts))
+    }
+
     pub fn stats(&mut self) -> DbStats {
         // &MonotonousBlockDb isn't Send, so we need to create mut references to each side to process
         // them in parallel without borrowing issues.
