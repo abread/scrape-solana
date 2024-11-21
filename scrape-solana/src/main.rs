@@ -516,7 +516,7 @@ fn top_contracts(args: TopContractsArgs) -> eyre::Result<()> {
         .min_date
         .as_ref()
         .map(|s| {
-            chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
                 .wrap_err("invalid min date")
                 .map(|datetime| datetime.and_utc().timestamp())
         })
@@ -525,7 +525,7 @@ fn top_contracts(args: TopContractsArgs) -> eyre::Result<()> {
         .max_date
         .as_ref()
         .map(|s| {
-            chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
                 .wrap_err("invalid max date")
                 .map(|datetime| datetime.and_utc().timestamp())
         })
@@ -604,14 +604,8 @@ fn top_contracts(args: TopContractsArgs) -> eyre::Result<()> {
 
     println!(
         "Stats from {} to {}",
-        args.min_date
-            .as_ref()
-            .map(String::as_str)
-            .unwrap_or("<min>"),
-        args.max_date
-            .as_ref()
-            .map(String::as_str)
-            .unwrap_or("<max>")
+        args.min_date.as_deref().unwrap_or("<min>"),
+        args.max_date.as_deref().unwrap_or("<max>")
     );
     let rank_label = format!("{:?}", args.ranking_strategy);
     println!(

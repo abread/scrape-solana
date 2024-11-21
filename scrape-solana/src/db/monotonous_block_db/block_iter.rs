@@ -147,12 +147,12 @@ impl<'db, const BCS: usize, const TXCS: usize> Iterator for BlockIter<'db, BCS, 
             None
         } else {
             assert!(
-                self.db
+                !self
+                    .db
                     .block_records
                     .get(self.idx)
                     .map(|r| r.is_endcap())
-                    .expect("bad block record")
-                    == false,
+                    .expect("bad block record"),
                 "corrupted block records"
             );
 
@@ -183,12 +183,12 @@ impl<'db, const BCS: usize, const TXCS: usize> DoubleEndedIterator for BlockIter
             self.idx_back -= 1;
 
             assert!(
-                self.db
+                !self
+                    .db
                     .block_records
                     .get(self.idx_back)
                     .map(|r| r.is_endcap())
-                    .expect("bad block record")
-                    == false,
+                    .expect("bad block record"),
                 "corrupted block records"
             );
             Some(self.get_block(self.idx_back, -1))
