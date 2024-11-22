@@ -23,6 +23,7 @@ pub enum BlockFetcherOperation {
 }
 
 pub fn spawn_block_fetcher(
+    forward_fetch_chance: Option<f64>,
     step: u64,
     api: Arc<SolanaApi>,
     block_handler_tx: SyncSender<(u64, UiConfirmedBlock)>,
@@ -34,15 +35,16 @@ pub fn spawn_block_fetcher(
     let (tx, rx) = sync_channel(1);
     let handle = std::thread::Builder::new()
         .name("block_fetcher".to_owned())
-        .spawn(
-            move || match block_fetcher_actor(step, rx, api, block_handler_tx, db_tx) {
+        .spawn(move || {
+            match block_fetcher_actor(forward_fetch_chance, step, rx, api, block_handler_tx, db_tx)
+            {
                 Ok(x) => Ok(x),
                 Err(e) => {
                     eprintln!("block fetcher actor failed: {e}");
                     Err(e)
                 }
-            },
-        )
+            }
+        })
         .expect("failed to spawn block fetcher actor thread");
     (tx, handle)
 }
@@ -66,6 +68,7 @@ const FETCH_BACK_THRESH: Duration = Duration::from_secs(60 * 60); // 1h
 const FETCH_FORWARD_THRESH: Duration = Duration::from_secs(60 * 60 * 24); // 1d
 
 fn block_fetcher_actor(
+    forward_fetch_chance: Option<f64>,
     step: u64,
     rx: Receiver<BlockFetcherOperation>,
     api: Arc<SolanaApi>,
@@ -93,7 +96,7 @@ fn block_fetcher_actor(
     let mut right_attempts = 0;
 
     // will be updated to keep data 1h~1day behind network tip
-    let mut forward_chance = 1.0;
+    let mut forward_chance = forward_fetch_chance.unwrap_or(0.5);
     let mut last_right_block_ts = limits
         .right_ts
         .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
@@ -191,7 +194,7 @@ fn block_fetcher_actor(
             Side::Right => right_attempts = 0,
         }
 
-        forward_chance = {
+        forward_chance = forward_fetch_chance.unwrap_or({
             let now = chrono::Utc::now();
             if last_right_block_ts > now - FETCH_BACK_THRESH {
                 0.0
@@ -200,7 +203,7 @@ fn block_fetcher_actor(
             } else {
                 1.0
             }
-        };
+        });
     }
 
     Ok(())
