@@ -226,8 +226,10 @@ where
 }
 
 pub struct ItemRef<'r, T, TR, const CHUNK_SZ: usize> {
-    chunk_rc: Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>,
     item_ref: Ref<'r, TR>,
+    // chunk_rc must be declared after item_ref so that it is dropped only after it
+    // preventing item_ref from being invalidated
+    chunk_rc: Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>,
 }
 
 impl<'r, T, TR, const CHUNK_SZ: usize> Deref for ItemRef<'r, T, TR, CHUNK_SZ> {
@@ -268,8 +270,10 @@ where
 }
 
 pub struct ItemRefMut<'r, T, TR, const CHUNK_SZ: usize> {
-    chunk_rc: Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>,
     item_ref: RefMut<'r, TR>,
+    // chunk_rc must be declared after item_ref so that it is dropped only after it
+    // preventing item_ref from being invalidated
+    chunk_rc: Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>,
 }
 
 impl<'r, T, TR, const CHUNK_SZ: usize> Deref for ItemRefMut<'r, T, TR, CHUNK_SZ> {
