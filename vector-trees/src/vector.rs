@@ -122,8 +122,14 @@ impl<'s, T:'s> RefMut<'s, T> for std::sync::MappedMutexGuard<'s, T> {
 */
 
 impl<T> Vector<T> for Vec<T> {
-    type Slice<'s> = &'s [T] where T: 's;
-    type SliceMut<'s> = &'s mut [T] where T: 's;
+    type Slice<'s>
+        = &'s [T]
+    where
+        T: 's;
+    type SliceMut<'s>
+        = &'s mut [T]
+    where
+        T: 's;
 
     fn clear(&mut self) {
         Vec::clear(self);
@@ -147,7 +153,10 @@ impl<T> Vector<T> for Vec<T> {
 }
 
 impl<'s, T> VectorSlice<'s, T> for &'s [T] {
-    type Ref<'r> = &'r T where 's: 'r;
+    type Ref<'r>
+        = &'r T
+    where
+        's: 'r;
 
     fn len(&self) -> usize {
         (*self).len()
@@ -163,7 +172,10 @@ impl<'s, T> VectorSlice<'s, T> for &'s [T] {
 }
 
 impl<'s, T> VectorSlice<'s, T> for &'s mut [T] {
-    type Ref<'r> = &'r T where 's: 'r;
+    type Ref<'r>
+        = &'r T
+    where
+        's: 'r;
 
     fn len(&self) -> usize {
         (**self).len()
@@ -179,7 +191,10 @@ impl<'s, T> VectorSlice<'s, T> for &'s mut [T] {
 }
 
 impl<'s, T> VectorSliceMut<'s, T> for &'s mut [T] {
-    type RefMut<'r> = &'r mut T where 's: 'r;
+    type RefMut<'r>
+        = &'r mut T
+    where
+        's: 'r;
 
     fn get_mut(&mut self, idx: usize) -> Option<Self::RefMut<'_>> {
         (*self).get_mut(idx)

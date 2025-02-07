@@ -513,7 +513,10 @@ where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
-    type Ref<'r> = ItemRef<'r, T, T, CHUNK_SZ> where 's: 'r;
+    type Ref<'r>
+        = ItemRef<'r, T, T, CHUNK_SZ>
+    where
+        's: 'r;
 
     fn len(&self) -> usize {
         self.len as usize
@@ -534,7 +537,10 @@ where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
-    type RefMut<'r> = ItemRefMut<'r, T, T, CHUNK_SZ> where 's: 'r;
+    type RefMut<'r>
+        = ItemRefMut<'r, T, T, CHUNK_SZ>
+    where
+        's: 'r;
 
     fn get_mut(&mut self, idx: usize) -> Option<Self::RefMut<'_>> {
         match self.get_mut(idx as u64) {
@@ -694,7 +700,10 @@ where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
-    type Ref<'r> = ItemRef<'r, T, T, CHUNK_SZ> where 's: 'r;
+    type Ref<'r>
+        = ItemRef<'r, T, T, CHUNK_SZ>
+    where
+        's: 'r;
 
     fn len(&self) -> usize {
         self.deref().len()
@@ -722,8 +731,16 @@ where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
-    type Slice<'s> = HugeVecSlice<'s, T, Store, CHUNK_SZ> where T: 's, Self: 's;
-    type SliceMut<'s> = HugeVecSliceMut<'s, T, Store, CHUNK_SZ> where T: 's, Self: 's;
+    type Slice<'s>
+        = HugeVecSlice<'s, T, Store, CHUNK_SZ>
+    where
+        T: 's,
+        Self: 's;
+    type SliceMut<'s>
+        = HugeVecSliceMut<'s, T, Store, CHUNK_SZ>
+    where
+        T: 's,
+        Self: 's;
 
     fn clear(&mut self) {
         self.clear().expect("clear error");
@@ -888,8 +905,14 @@ mod test {
         }
         impl IOTransformer for Arc<Recorder> {
             type Error = io::Error;
-            type Reader<R> = R where R: io::BufRead;
-            type Writer<W> = W where W: io::Write;
+            type Reader<R>
+                = R
+            where
+                R: io::BufRead;
+            type Writer<W>
+                = W
+            where
+                W: io::Write;
 
             fn wrap_read<R: io::BufRead, T, E>(
                 &self,

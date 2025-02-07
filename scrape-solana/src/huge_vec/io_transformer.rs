@@ -31,8 +31,14 @@ pub trait IOTransformer {
 
 impl IOTransformer for () {
     type Error = io::Error;
-    type Reader<R> = R where R: io::BufRead;
-    type Writer<W> = W where W: io::Write;
+    type Reader<R>
+        = R
+    where
+        R: io::BufRead;
+    type Writer<W>
+        = W
+    where
+        W: io::Write;
 
     fn wrap_read<R: io::BufRead, T, E>(
         &self,
@@ -91,8 +97,14 @@ impl Default for ZstdTransformer {
 
 impl IOTransformer for ZstdTransformer {
     type Error = io::Error;
-    type Reader<R> = zstd::stream::zio::Reader<R, zstd::stream::raw::Decoder<'static>> where R: io::BufRead;
-    type Writer<W> = zstd::stream::zio::Writer<W, zstd::stream::raw::Encoder<'static>> where W: io::Write;
+    type Reader<R>
+        = zstd::stream::zio::Reader<R, zstd::stream::raw::Decoder<'static>>
+    where
+        R: io::BufRead;
+    type Writer<W>
+        = zstd::stream::zio::Writer<W, zstd::stream::raw::Encoder<'static>>
+    where
+        W: io::Write;
 
     fn wrap_read<R: io::BufRead, T, E>(
         &self,
