@@ -1,10 +1,7 @@
 [workspace]
 resolver = "2"
 
-members = [
-    "vector-trees",
-    "scrape-solana"
-]
+members = ["vector-trees", "scrape-solana", "generic-ref", "generic-vec", "huge-vec"]
 
 [profile.release]
 debug = true
@@ -13,4 +10,13 @@ debug = true
 overflow-checks = true
 
 [profile.release.package.scrape-solana]
+overflow-checks = true
+
+[profile.release.package.generic-ref]
+overflow-checks = true
+
+[profile.release.package.generic-vec]
+overflow-checks = true
+
+[profile.release.package.huge-vec]
 overflow-checks = true
