@@ -178,28 +178,33 @@ fn account_fetcher_actor(
         }
 
         // keep min height
-        let min_height = last_block_height;
+        let mut min_height = last_block_height;
 
         // fetch accounts
-        let account_ids_vec = account_ids.iter().cloned().collect::<Vec<_>>();
-        let raw_accounts = match fetch_raw_accounts(&api, &account_ids_vec, &should_stop) {
-            Some(res) => res?,
-            None => break, // stop signal
-        };
+        let all_account_ids = account_ids.iter().cloned().collect::<Vec<_>>();
+        for account_ids in all_account_ids.chunks(100) {
+            let raw_accounts = match fetch_raw_accounts(&api, account_ids, &should_stop) {
+                Some(res) => res?,
+                None => break, // stop signal
+            };
 
-        // fetch max height
-        let max_height = match get_block_height(&api, &should_stop) {
-            Some(res) => res?,
-            None => break, // stop signal
-        };
-        last_block_height = max_height;
+            // fetch max height
+            let max_height = match get_block_height(&api, &should_stop) {
+                Some(res) => res?,
+                None => break, // stop signal
+            };
+            last_block_height = max_height;
 
-        let accounts = parse_accounts(account_ids_vec, raw_accounts, min_height, max_height);
+            let accounts =
+                parse_accounts(account_ids.to_vec(), raw_accounts, min_height, max_height);
 
-        // store accounts
-        if db_tx.send(DbOperation::StoreNewAccounts(accounts)).is_err() {
-            println!("block handler[account fetcher]: db closed. terminating");
-            break;
+            // store accounts
+            if db_tx.send(DbOperation::StoreNewAccounts(accounts)).is_err() {
+                println!("block handler[account fetcher]: db closed. terminating");
+                break;
+            }
+
+            min_height = max_height;
         }
     }
 
