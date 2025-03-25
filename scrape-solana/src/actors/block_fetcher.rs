@@ -67,6 +67,15 @@ impl Display for Side {
 const FETCH_BACK_THRESH: Duration = Duration::from_secs(60 * 60); // 1h
 const FETCH_FORWARD_THRESH: Duration = Duration::from_secs(60 * 60 * 24); // 1d
 
+const MAX_ATTEMPTS: u64 = 10;
+const COOLDOWN_DURATION: Duration = Duration::from_secs(60 * 60); // 1h
+
+// we can't sleep for a whole hour at a time without breaking the stop signal, so we'll sleep for a few seconds many times
+const COOLDOWN_INCR_DURATION: Duration = Duration::from_secs(2);
+// max_attempts + cooldown counted as failed attempts
+const MAX_ATTEMPTS_WITH_COOLDOWN: u64 =
+    MAX_ATTEMPTS + (COOLDOWN_DURATION.as_secs() / COOLDOWN_INCR_DURATION.as_secs());
+
 fn block_fetcher_actor(
     forward_fetch_chance: Option<f64>,
     step: u64,
@@ -92,8 +101,8 @@ fn block_fetcher_actor(
         .map(|s| s + step)
         .unwrap_or(limits.middle_slot + step);
 
-    let mut left_attempts = 0;
-    let mut right_attempts = 0;
+    let mut left_attempts = 0u64;
+    let mut right_attempts = 0u64;
 
     // will be updated to keep data 1h~1day behind network tip
     let mut forward_chance = forward_fetch_chance.unwrap_or(0.5);
@@ -108,9 +117,20 @@ fn block_fetcher_actor(
         }
 
         let side = if rand::random::<f64>() < forward_chance {
-            Side::Right
+            if right_attempts < MAX_ATTEMPTS_WITH_COOLDOWN + MAX_ATTEMPTS {
+                Side::Right
+            } else {
+                // right is stuck, go for left
+                Side::Left
+            }
         } else {
-            Side::Left
+            #[allow(clippy::collapsible_else_if)]
+            if left_attempts < MAX_ATTEMPTS_WITH_COOLDOWN + MAX_ATTEMPTS {
+                Side::Left
+            } else {
+                // left is stuck, go for right
+                Side::Right
+            }
         };
 
         let slot = match side {
@@ -118,23 +138,20 @@ fn block_fetcher_actor(
             Side::Right => right_slot,
         };
 
-        // register fetch attempt
-        match side {
-            Side::Left => left_attempts += 1,
-            Side::Right => right_attempts += 1,
-        }
-
         // if we get stuck, try waiting a long long time, then bail if still stuck
         {
+            // register fetch attempt
             let attempts = match side {
-                Side::Left => left_attempts,
-                Side::Right => right_attempts,
+                Side::Left => &mut left_attempts,
+                Side::Right => &mut right_attempts,
             };
+            *attempts += 1;
 
-            if attempts > 10 && attempts < 10 + 60 * 60 / 30 {
-                std::thread::sleep(Duration::from_secs(30));
+            if *attempts > MAX_ATTEMPTS && *attempts < MAX_ATTEMPTS_WITH_COOLDOWN {
+                std::thread::sleep(COOLDOWN_INCR_DURATION);
                 continue;
-            } else if attempts > 10 + 60 * 60 / 30 + 3 {
+            // else if attempts < MAX_ATTEMPTS_WITH_COOLDOWN + MAX_ATTEMPTS, it will try again normally for a few times
+            } else if *attempts > MAX_ATTEMPTS_WITH_COOLDOWN + MAX_ATTEMPTS {
                 return Err(eyre!(
                     "block fetcher: stuck at slot {slot} ({side} side), bailing"
                 ));
