@@ -140,7 +140,7 @@ impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
     }
 }
 
-impl<'db, const BCS: usize, const TXCS: usize> Iterator for BlockIter<'db, BCS, TXCS> {
+impl<const BCS: usize, const TXCS: usize> Iterator for BlockIter<'_, BCS, TXCS> {
     type Item = eyre::Result<Block>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx >= self.max_idx {
@@ -175,7 +175,7 @@ impl<'db, const BCS: usize, const TXCS: usize> Iterator for BlockIter<'db, BCS, 
     }
 }
 
-impl<'db, const BCS: usize, const TXCS: usize> DoubleEndedIterator for BlockIter<'db, BCS, TXCS> {
+impl<const BCS: usize, const TXCS: usize> DoubleEndedIterator for BlockIter<'_, BCS, TXCS> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.idx_back <= self.min_idx {
             None
@@ -196,10 +196,10 @@ impl<'db, const BCS: usize, const TXCS: usize> DoubleEndedIterator for BlockIter
     }
 }
 
-impl<'db, const BCS: usize, const TXCS: usize> ExactSizeIterator for BlockIter<'db, BCS, TXCS> {
+impl<const BCS: usize, const TXCS: usize> ExactSizeIterator for BlockIter<'_, BCS, TXCS> {
     fn len(&self) -> usize {
         self.db.block_records.len().saturating_sub(1) as usize
     }
 }
 
-impl<'db, const BCS: usize, const TXCS: usize> FusedIterator for BlockIter<'db, BCS, TXCS> {}
+impl<const BCS: usize, const TXCS: usize> FusedIterator for BlockIter<'_, BCS, TXCS> {}

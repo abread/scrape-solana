@@ -969,13 +969,12 @@ impl<
 }
 
 impl<
-        'db,
         const VERSION: u64,
         const BCS: usize,
         const TXCS: usize,
         const ARCS: usize,
         const ADCS: usize,
-    > Iterator for AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+    > Iterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
 {
     type Item = eyre::Result<Account>;
     fn next(&mut self) -> Option<Self::Item> {
@@ -1013,13 +1012,12 @@ impl<
 }
 
 impl<
-        'db,
         const VERSION: u64,
         const BCS: usize,
         const TXCS: usize,
         const ARCS: usize,
         const ADCS: usize,
-    > DoubleEndedIterator for AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+    > DoubleEndedIterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.idx_back == 0 {
@@ -1053,13 +1051,12 @@ impl<
 }
 
 impl<
-        'db,
         const VERSION: u64,
         const BCS: usize,
         const TXCS: usize,
         const ARCS: usize,
         const ADCS: usize,
-    > ExactSizeIterator for AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+    > ExactSizeIterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
 {
     fn len(&self) -> usize {
         self.db.account_records.len().saturating_sub(1) as usize
@@ -1067,12 +1064,11 @@ impl<
 }
 
 impl<
-        'db,
         const VERSION: u64,
         const BCS: usize,
         const TXCS: usize,
         const ARCS: usize,
         const ADCS: usize,
-    > std::iter::FusedIterator for AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+    > std::iter::FusedIterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
 {
 }

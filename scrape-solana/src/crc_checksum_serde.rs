@@ -14,7 +14,7 @@ pub fn checksum<T: Serialize>(val: T) -> u64 {
 
 struct ChecksumSerializer(Digest);
 
-impl<'ser> serde::Serializer for &'ser mut ChecksumSerializer {
+impl serde::Serializer for &mut ChecksumSerializer {
     type Ok = ();
     type Error = Infallible;
 
@@ -213,7 +213,7 @@ impl<'ser> serde::Serializer for &'ser mut ChecksumSerializer {
     }
 }
 
-impl<'ser> serde::ser::SerializeSeq for &'ser mut ChecksumSerializer {
+impl serde::ser::SerializeSeq for &mut ChecksumSerializer {
     type Ok = ();
     type Error = Infallible;
 
@@ -229,7 +229,7 @@ impl<'ser> serde::ser::SerializeSeq for &'ser mut ChecksumSerializer {
     }
 }
 
-impl<'ser> serde::ser::SerializeTuple for &'ser mut ChecksumSerializer {
+impl serde::ser::SerializeTuple for &mut ChecksumSerializer {
     type Ok = ();
     type Error = Infallible;
 
@@ -245,7 +245,7 @@ impl<'ser> serde::ser::SerializeTuple for &'ser mut ChecksumSerializer {
     }
 }
 
-impl<'ser> serde::ser::SerializeTupleStruct for &'ser mut ChecksumSerializer {
+impl serde::ser::SerializeTupleStruct for &mut ChecksumSerializer {
     type Ok = ();
     type Error = Infallible;
 
@@ -261,7 +261,7 @@ impl<'ser> serde::ser::SerializeTupleStruct for &'ser mut ChecksumSerializer {
     }
 }
 
-impl<'ser> serde::ser::SerializeTupleVariant for &'ser mut ChecksumSerializer {
+impl serde::ser::SerializeTupleVariant for &mut ChecksumSerializer {
     type Ok = ();
     type Error = Infallible;
 
@@ -277,7 +277,7 @@ impl<'ser> serde::ser::SerializeTupleVariant for &'ser mut ChecksumSerializer {
     }
 }
 
-impl<'ser> serde::ser::SerializeMap for &'ser mut ChecksumSerializer {
+impl serde::ser::SerializeMap for &mut ChecksumSerializer {
     type Ok = ();
     type Error = Infallible;
 
@@ -300,7 +300,7 @@ impl<'ser> serde::ser::SerializeMap for &'ser mut ChecksumSerializer {
     }
 }
 
-impl<'ser> serde::ser::SerializeStruct for &'ser mut ChecksumSerializer {
+impl serde::ser::SerializeStruct for &mut ChecksumSerializer {
     type Ok = ();
     type Error = Infallible;
 
@@ -317,7 +317,7 @@ impl<'ser> serde::ser::SerializeStruct for &'ser mut ChecksumSerializer {
     }
 }
 
-impl<'ser> serde::ser::SerializeStructVariant for &'ser mut ChecksumSerializer {
+impl serde::ser::SerializeStructVariant for &mut ChecksumSerializer {
     type Ok = ();
     type Error = Infallible;
 

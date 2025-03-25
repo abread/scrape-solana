@@ -232,7 +232,7 @@ pub struct ItemRef<'r, T, TR, const CHUNK_SZ: usize> {
     chunk_rc: Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>,
 }
 
-impl<'r, T, TR, const CHUNK_SZ: usize> Deref for ItemRef<'r, T, TR, CHUNK_SZ> {
+impl<T, TR, const CHUNK_SZ: usize> Deref for ItemRef<'_, T, TR, CHUNK_SZ> {
     type Target = TR;
 
     fn deref(&self) -> &Self::Target {
@@ -249,8 +249,7 @@ impl<'r, T, TR: 'r, const CHUNK_SZ: usize> vector_trees::Ref<'r, TR>
         }
     }
 }
-impl<'r, T, TR, const CHUNK_SZ: usize, U: PartialEq<TR>> PartialEq<U>
-    for ItemRef<'r, T, TR, CHUNK_SZ>
+impl<T, TR, const CHUNK_SZ: usize, U: PartialEq<TR>> PartialEq<U> for ItemRef<'_, T, TR, CHUNK_SZ>
 where
     TR: PartialEq,
 {
@@ -258,7 +257,7 @@ where
         other.eq(self.item_ref.deref())
     }
 }
-impl<'r, T, TR, const CHUNK_SZ: usize> Debug for ItemRef<'r, T, TR, CHUNK_SZ>
+impl<T, TR, const CHUNK_SZ: usize> Debug for ItemRef<'_, T, TR, CHUNK_SZ>
 where
     TR: Debug,
 {
@@ -276,14 +275,14 @@ pub struct ItemRefMut<'r, T, TR, const CHUNK_SZ: usize> {
     chunk_rc: Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>,
 }
 
-impl<'r, T, TR, const CHUNK_SZ: usize> Deref for ItemRefMut<'r, T, TR, CHUNK_SZ> {
+impl<T, TR, const CHUNK_SZ: usize> Deref for ItemRefMut<'_, T, TR, CHUNK_SZ> {
     type Target = TR;
 
     fn deref(&self) -> &Self::Target {
         self.item_ref.deref()
     }
 }
-impl<'r, T, TR, const CHUNK_SZ: usize> DerefMut for ItemRefMut<'r, T, TR, CHUNK_SZ> {
+impl<T, TR, const CHUNK_SZ: usize> DerefMut for ItemRefMut<'_, T, TR, CHUNK_SZ> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.item_ref.deref_mut()
     }
@@ -301,8 +300,8 @@ impl<'r, T, TR: 'r, const CHUNK_SZ: usize> vector_trees::RefMut<'r, TR>
         }
     }
 }
-impl<'r, T, TR, const CHUNK_SZ: usize, U: PartialEq<TR>> PartialEq<U>
-    for ItemRefMut<'r, T, TR, CHUNK_SZ>
+impl<T, TR, const CHUNK_SZ: usize, U: PartialEq<TR>> PartialEq<U>
+    for ItemRefMut<'_, T, TR, CHUNK_SZ>
 where
     TR: PartialEq,
 {
@@ -310,7 +309,7 @@ where
         other.eq(self.item_ref.deref())
     }
 }
-impl<'r, T, TR, const CHUNK_SZ: usize> Debug for ItemRefMut<'r, T, TR, CHUNK_SZ>
+impl<T, TR, const CHUNK_SZ: usize> Debug for ItemRefMut<'_, T, TR, CHUNK_SZ>
 where
     TR: Debug,
 {
@@ -368,22 +367,21 @@ where
     }
 }
 
-impl<'v, T, Store, const CHUNK_SZ: usize> FusedIterator for HugeVecIter<'v, T, Store, CHUNK_SZ>
+impl<T, Store, const CHUNK_SZ: usize> FusedIterator for HugeVecIter<'_, T, Store, CHUNK_SZ>
 where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
 }
 
-impl<'v, T, Store, const CHUNK_SZ: usize> ExactSizeIterator for HugeVecIter<'v, T, Store, CHUNK_SZ>
+impl<T, Store, const CHUNK_SZ: usize> ExactSizeIterator for HugeVecIter<'_, T, Store, CHUNK_SZ>
 where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
 }
 
-impl<'v, T, Store, const CHUNK_SZ: usize> DoubleEndedIterator
-    for HugeVecIter<'v, T, Store, CHUNK_SZ>
+impl<T, Store, const CHUNK_SZ: usize> DoubleEndedIterator for HugeVecIter<'_, T, Store, CHUNK_SZ>
 where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
