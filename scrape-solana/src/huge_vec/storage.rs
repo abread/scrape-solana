@@ -393,6 +393,9 @@ where
                 .expect("lock poisoned");
         }
 
+        // call sync to ensure changes are truly persisted to disk
+        rustix::fs::sync();
+
         Ok(())
     }
 }
