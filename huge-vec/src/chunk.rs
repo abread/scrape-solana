@@ -1,21 +1,79 @@
 use std::{
     alloc::Layout,
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
     ptr::NonNull,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
-use serde::{ser::SerializeStruct, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
-pub struct Chunk<T> {
+/// A fixed capacity array of elements.
+pub(crate) struct Chunk<T> {
     capacity: usize,
-    len: usize,
-    storage: NonNull<T>,
+    len: AtomicUsize,
+
+    // TODO: consider removing indirection and using [T] here. HAS SAFETY IMPLICATIONS IN CHUNK CACHE
+    data: NonNull<T>,
+}
+
+/// A (de)serializable Chunk, with additional metadata for sanity checking.
+///
+/// Currently metadata only includes the index of the first chunk element in the overall HugeVec.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct StoredChunk<T> {
+    start_idx: u64,
+    capacity: usize,
+    // note: we do not have len here because data is a Vec<T> and its length is used instead
+    data: Vec<T>,
+}
+
+impl<T> StoredChunk<T> {
+    pub(crate) fn new(start_idx: u64, capacity: usize) -> Self {
+        Self {
+            start_idx,
+            capacity,
+            data: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Copy chunk into a new StoredChunk.
+    ///
+    /// # Safety
+    /// Caller must ensure that existing chunk elements are not concurrently modified.
+    pub(crate) unsafe fn from_chunk_ref(chunk: &Chunk<T>, start_idx: u64) -> Self
+    where
+        T: Clone,
+    {
+        Self {
+            start_idx,
+            capacity: chunk.capacity,
+            data: chunk.as_slice().to_vec(),
+        }
+    }
+
+    pub(crate) fn from_chunk(chunk: Chunk<T>, start_idx: u64) -> Self {
+        let capacity = chunk.capacity;
+        let data = chunk.into_vec();
+        Self {
+            start_idx,
+            capacity,
+            data,
+        }
+    }
+
+    pub(crate) fn into_chunk(self) -> Chunk<T> {
+        Chunk::from_iter(self.capacity, self.data.into_iter())
+    }
 }
 
 impl<T> Chunk<T> {
-    pub fn new(capacity: usize) -> Self {
+    /// Create a new empty chunk with given capacity.
+    pub(crate) fn new(capacity: usize) -> Self {
         assert!(capacity * std::mem::size_of::<T>() < isize::MAX as usize); // should always hold
+        assert_ne!(
+            std::mem::size_of::<T>(),
+            0,
+            "chunks of zero-sized types are not supported"
+        );
 
         let alloc_layout = Layout::array::<T>(capacity).unwrap();
         let storage = unsafe { std::alloc::alloc(alloc_layout) as *mut T };
@@ -23,76 +81,176 @@ impl<T> Chunk<T> {
 
         Self {
             capacity,
-            len: 0,
-            storage,
+            len: AtomicUsize::new(0),
+            data: storage,
         }
     }
 
-    fn new_from_parts(capacity: usize, mut values: Vec<T>) -> Self {
+    /// Create a chunk with given capacity from an existing vector.
+    /// Panics if the vector has more than `capacity` elements.
+    pub(crate) fn from_vec(capacity: usize, vec: Vec<T>) -> Self {
+        // TODO: reuse allocation? almost certainly requires calling realloc when Vec::capacity != capacity.
+        Self::from_iter(capacity, vec.into_iter())
+    }
+
+    /// Create a new chunk with given capacity and fill it with values from an iterator.
+    /// Panics if the iterator has more than `capacity` elements.
+    pub(crate) fn from_iter<It: Iterator<Item = T> + ExactSizeIterator>(
+        capacity: usize,
+        values: It,
+    ) -> Self {
         assert!(values.len() <= capacity);
-        let mut chunk = Self::new(capacity);
+        let chunk = Self::new(capacity);
 
         // move values to chunk
-        for v in values.drain(..) {
-            chunk.push(v);
+        for v in values {
+            // Safety:
+            // - push will not be called concurrently (we have the only reference to chunk)
+            // - chunk is not full (values.len() <= capacity)
+            unsafe {
+                chunk.push(v);
+            }
         }
 
         chunk
     }
 
-    pub fn push(&mut self, value: T) {
-        if self.len < self.capacity {
-            // Safety: len < capacity (< isize::MAX)
-            let ptr = unsafe { self.storage.offset(self.len as isize) };
+    /// Insert a value at the end of the chunk.
+    ///
+    /// # Safety
+    /// Caller must ensure chunk is not full and that this method is not called concurrently with itself.
+    pub(crate) unsafe fn push(&self, value: T) {
+        let len = self.len.load(Ordering::SeqCst);
 
-            // Safety: self.storage is aligned for Ts, .offset(len) is within the allocation
-            // Bonus: self.storage.offset(self.len) is uninitialized, so there's no T to drop.
-            unsafe {
-                ptr.write(value);
-            }
+        // TODO: make it a debug_assert?
+        assert!(len < self.capacity, "attempted to push beyond chunk limits");
 
-            self.len += 1;
-        } else {
-            unreachable!("attempted to push beyond chunk limits");
+        // Safety: len < capacity (< isize::MAX), see Chunk::new
+        let ptr = unsafe { self.data.offset(len as isize) };
+
+        // Safety:
+        // - pointer is aligned (guaranteed in alloc)
+        // - pointer is non-null (guaranteed by type)
+        // - pointer has appropriate provenance (derived from alloc)
+        // - points to a valid T (guaranteed by push and caller guarantees, idx is within pushed bounds)
+        // - respects aliasing:
+        //     * no other reference to the same element exists (guaranteed by caller)
+        //     * no other accesses exist (guaranteed by caller - not mid-push, and by Chunk API)
+        // Bonus: self.storage.offset(self.len) is uninitialized, so there's no T to drop.
+        unsafe {
+            ptr.write(value);
+        }
+
+        // TODO: make it a debug_assert and just increment len?
+        if self
+            .len
+            .compare_exchange(len, len + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            // UB if we make it here, but we might as well try to crash
+            panic!("concurrent push detected");
         }
     }
 
-    pub fn capacity(&self) -> usize {
+    /// Get reference into chunk element at index.
+    ///
+    /// # Safety
+    /// Caller must ensure that:
+    /// - index is within bounds.
+    /// - no *mutable* reference to the same element exists (e.g. called get_mut and held on to result).
+    /// - element is not mid-push (i.e. if push is concurrently called, it started with len > index).
+    pub(crate) unsafe fn get(&self, idx: usize) -> &T {
+        // TODO: make it a debug_assert?
+        assert!(idx < self.len.load(Ordering::SeqCst));
+
+        // Safety: idx < len and idx < isize::MAX (see Chunk::new)
+        let ptr = unsafe { self.data.offset(idx as isize) };
+
+        // Safety:
+        // - pointer is aligned (guaranteed in alloc)
+        // - pointer is non-null (guaranteed by type)
+        // - pointer has appropriate provenance (derived from alloc)
+        // - points to a valid T (guaranteed by push and caller guarantees, idx is within pushed bounds)
+        // - respects aliasing:
+        //     * no mutable reference to the same element exists (guaranteed by caller)
+        //     * no other accesses exist (guaranteed by caller - not mid-push, and by Chunk API)
+        unsafe { ptr.as_ref() }
+    }
+
+    /// Get mutable reference into chunk element at index.
+    ///
+    /// # Safety
+    /// Caller must ensure that:
+    /// - index is within bounds.
+    /// - no references to the same element exists (e.g. called get(idx)/as_slice and held on to result).
+    #[allow(clippy::mut_from_ref)]
+    pub(crate) unsafe fn get_mut(&self, idx: usize) -> &mut T {
+        // TODO: make it a debug_assert?
+        assert!(idx < self.len.load(Ordering::SeqCst));
+
+        // Safety: idx < len and idx < isize::MAX (see Chunk::new)
+        let mut ptr = unsafe { self.data.offset(idx as isize) };
+
+        // Safety:
+        // - pointer is aligned (guaranteed in alloc)
+        // - pointer is non-null (guaranteed by type)
+        // - pointer has appropriate provenance (derived from alloc)
+        // - points to a valid T (guaranteed by push and caller guarantees, idx is within pushed bounds)
+        // - respects aliasing:
+        //     * no other reference to the same element exists (guaranteed by caller)
+        //     * no other accesses exist (guaranteed by caller and Chunk API)
+        ptr.as_mut()
+    }
+
+    /// Maximum number of elements that can be stored in the chunk.
+    pub(crate) fn capacity(&self) -> usize {
         self.capacity
     }
 
-    pub fn as_slice(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts(self.storage.as_ptr() as *const _, self.len) }
+    /// Current number of elements stored in the chunk.
+    pub(crate) fn len(&self) -> usize {
+        self.len.load(Ordering::SeqCst)
     }
 
-    pub fn as_slice_mut(&mut self) -> &mut [T] {
-        unsafe { std::slice::from_raw_parts_mut(self.storage.as_ptr(), self.len) }
+    /// True if chunk is full.
+    pub(crate) fn is_full(&self) -> bool {
+        self.len.load(Ordering::SeqCst) == self.capacity
     }
 
-    pub fn is_full(&self) -> bool {
-        self.len == self.capacity
+    /// Slice of current chunk elements.
+    ///
+    /// # Safety
+    /// Caller must ensure that no mutable references to chunk elements exist (i.e. don't call Chunk::get_mut).
+    /// However, it is safe to push more elements into the chunk, and even to call get_mut on those new elements.
+    /// The slice will only contain elements that were pushed before the slice was created.
+    pub(crate) unsafe fn as_slice(&self) -> &[T] {
+        // Safety:
+        // - storage is non-null
+        // - storage is valid for reads (guaranteed by Chunk API)
+        // - storage is at least self.len*size<T>() long and in a single allocation (guaranteed by Chunk API)
+        // - storage has len consecutive T's (guaranteed by Chunk::push API)
+        // - memory referenced by slice is not modified while slice ref is live (guaranteed by Chunk API)
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len.load(Ordering::SeqCst)) }
     }
-}
 
-impl<T> Deref for Chunk<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
-impl<T> DerefMut for Chunk<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_slice_mut()
+    /// Convert chunk into a Vec, consuming it.
+    pub(crate) fn into_vec(self) -> Vec<T> {
+        // Safety:
+        // - ptr was allocated with global allocator (see Chunk::new)
+        // - T has the same alignment as ptr allocation (see Chunk::new)
+        // - size of ptr allocation is size of T * capacity (see Chunk::new)
+        // - len is <= capacity (guaranteed by Chunk API, see push/from_iter)
+        // - ptr was allocated with size of T * capacity (see Chunk::new)
+        // - size of T * capacity < isisze::MAX (see Chunk::new)
+        unsafe { Vec::from_raw_parts(self.data.as_ptr(), self.len(), self.capacity) }
     }
 }
 
 impl<T> Drop for Chunk<T> {
     fn drop(&mut self) {
-        for idx in 0..self.len {
+        for idx in 0..self.len.load(Ordering::SeqCst) {
             // Safety: idx < len and idx < isize::MAX (see Chunk::new)
-            let ptr = unsafe { self.storage.offset(idx as isize) };
+            let ptr = unsafe { self.data.offset(idx as isize) };
 
             // Safety: ptr is a valid pointer to a chunk element, not referenced by anything at the moment
             // this leaves memory uninitialized, but it's okay because we do not reference it again.
@@ -104,95 +262,7 @@ impl<T> Drop for Chunk<T> {
         let layout = Layout::array::<T>(self.capacity).unwrap();
         // Safety: self.storage was allocated in Chunk::new with this exact layout and std::alloc::alloc
         unsafe {
-            std::alloc::dealloc(self.storage.as_ptr() as *mut u8, layout);
+            std::alloc::dealloc(self.data.as_ptr() as *mut u8, layout);
         }
-    }
-}
-
-impl<T: Serialize> Serialize for Chunk<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut s = serializer.serialize_struct("Chunk", 2)?;
-        s.serialize_field("capacity", &self.capacity)?;
-        s.serialize_field("values", self.as_slice())?;
-        s.end()
-    }
-}
-
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for Chunk<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(field_identifier, rename_all = "lowercase")]
-        enum Field {
-            Capacity,
-            Values,
-        }
-
-        struct ChunkVisitor<T> {
-            _a: PhantomData<T>,
-        }
-        impl<T> Default for ChunkVisitor<T> {
-            fn default() -> Self {
-                Self { _a: PhantomData }
-            }
-        }
-        impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for ChunkVisitor<T> {
-            type Value = Chunk<T>;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(formatter, "struct Chunk<T>")
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::SeqAccess<'de>,
-            {
-                let capacity = seq
-                    .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
-                let values = seq
-                    .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
-
-                Ok(Chunk::new_from_parts(capacity, values))
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let mut capacity = None;
-                let mut values = None;
-
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        Field::Capacity => {
-                            if capacity.is_some() {
-                                return Err(serde::de::Error::duplicate_field("capacity"));
-                            }
-                            capacity = Some(map.next_value()?);
-                        }
-                        Field::Values => {
-                            if values.is_some() {
-                                return Err(serde::de::Error::duplicate_field("values"));
-                            }
-                            values = Some(map.next_value()?);
-                        }
-                    }
-                }
-
-                let capacity =
-                    capacity.ok_or_else(|| serde::de::Error::missing_field("capacity"))?;
-                let values = values.ok_or_else(|| serde::de::Error::missing_field("values"))?;
-                Ok(Chunk::new_from_parts(capacity, values))
-            }
-        }
-
-        deserializer.deserialize_struct("Chunk", &["capacity", "values"], ChunkVisitor::default())
     }
 }

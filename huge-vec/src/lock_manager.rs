@@ -1,15 +1,16 @@
 use std::sync::Condvar;
 use std::{collections::BTreeMap, sync::Mutex};
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub(crate) struct LockRange(u64, u64);
-
+/// A manager for locking ranges of a vector.
 pub(crate) struct LockManager {
     locks: Mutex<BTreeMap<LockRange, LockData>>,
     wait_unlock: Condvar,
 }
 
-pub(crate) struct RdLock<'mgr> {
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) struct LockRange(u64, u64);
+
+pub(crate) struct RdLockGuard<'mgr> {
     lock_manager: &'mgr LockManager,
     range: LockRange,
 }
@@ -20,7 +21,7 @@ pub(crate) struct WrLock<'mgr> {
 }
 
 impl LockManager {
-    pub(crate) fn rd_lock(&self, range: LockRange) -> RdLock<'_> {
+    pub(crate) fn rd_lock(&self, range: LockRange) -> RdLockGuard<'_> {
         let mut locks = self.locks.lock().expect("lock poisoned");
 
         // block until no write locks exist for requested range
@@ -50,7 +51,7 @@ impl LockManager {
 
         locks.entry(range).or_default().count += 1;
 
-        RdLock {
+        RdLockGuard {
             lock_manager: self,
             range,
         }
@@ -92,12 +93,12 @@ impl LockManager {
     }
 }
 
-impl<'mgr> RdLock<'mgr> {
+impl<'mgr> RdLockGuard<'mgr> {
     pub(crate) fn len(&self) -> u64 {
         self.range.len()
     }
 
-    pub(crate) fn shrink(self, offset: u64) -> RdLock<'mgr> {
+    pub(crate) fn shrink(self, offset: u64) -> RdLockGuard<'mgr> {
         let (new_range, _) = self.range.split_at(offset);
 
         {
@@ -112,13 +113,13 @@ impl<'mgr> RdLock<'mgr> {
             locks.entry(new_range).or_default().count += 1;
         }
 
-        RdLock {
+        RdLockGuard {
             lock_manager: self.lock_manager,
             range: new_range,
         }
     }
 
-    pub(crate) fn split_at(self, offset: u64) -> (RdLock<'mgr>, RdLock<'mgr>) {
+    pub(crate) fn split_at(self, offset: u64) -> (RdLockGuard<'mgr>, RdLockGuard<'mgr>) {
         let (r1, r2) = self.range.split_at(offset);
 
         {
@@ -135,11 +136,11 @@ impl<'mgr> RdLock<'mgr> {
         }
 
         (
-            RdLock {
+            RdLockGuard {
                 lock_manager: self.lock_manager,
                 range: r1,
             },
-            RdLock {
+            RdLockGuard {
                 lock_manager: self.lock_manager,
                 range: r2,
             },
@@ -235,7 +236,7 @@ impl LockData {
     }
 }
 
-impl Drop for RdLock<'_> {
+impl Drop for RdLockGuard<'_> {
     fn drop(&mut self) {
         let mut locks = self.lock_manager.locks.lock().expect("lock poisoned");
         let lock_data = locks

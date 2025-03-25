@@ -6,8 +6,6 @@ When storing a vector, it is important to ensure the entire vector is written, a
 The storage module aids in enforcing vector contiguity by preventing discontinuous chunks from being allocated. However, this is limited to chunk allocation, meaning multiple chunks can be allocated in the end of the vector and stored in any order.
 It permits unordered writes to allow for write concurrency (implemented in the chunk cache module).
 
-
-
 The storage module is implemented in terms of a low-level module -- chunk_io -- containing primitives to load/store objects to/from disk, taking care of (de)compression, (de)serialization and write atomicity (writing to a temporary file and atomically renaming it to the destination).
 "]
 
@@ -28,14 +26,25 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use metadata::CURRENT_VERSION;
 
-pub(super) struct Store<Chunk> {
+/// Chunk store manager.
+///
+/// Provides primitives for loading and storing chunks to/from disk, and loading/storing vector metadata.
+/// It guarantees atomic writes for each chunk, and ensures the set of chunks is always contiguous on-disk.
+/// It also provides a mechanism to truncate the vector, removing chunks from the end.
+///
+/// The store is implemented as a tree of directories, with each level of the tree representing a different part of the chunk index.
+pub(crate) struct Store<Chunk> {
     root: PathBuf,
     metadata: Metadata<Chunk>,
     chunk_count: ChunkIdx,
 }
 
-impl<Chunk: Serialize + DeserializeOwned + Default> Store<Chunk> {
-    pub(super) fn new(root: PathBuf) -> Result<Self, StoreError> {
+impl<Chunk: Serialize + DeserializeOwned> Store<Chunk> {
+    /// Open a store at the given root directory, creating it if it doesn't exist.
+    ///
+    /// This method performs a number of sanity checks on the store's metadata, and will fail if the
+    /// store uses a different underlying chunk type or was created with a more recent version of hugevec.
+    pub(crate) fn open(root: PathBuf) -> Result<Self, StoreError> {
         // ensure we're not opening a random directory as if it were a hugevec store
         let metadata = match Store::load_metadata(&root) {
             Ok(metadata) => metadata,
@@ -70,21 +79,24 @@ impl<Chunk: Serialize + DeserializeOwned + Default> Store<Chunk> {
         chunk_io::store(metadata, &path)
     }
 
-    fn metadata(&self) -> &Metadata<Chunk> {
+    /// Store metadata.
+    pub(crate) fn metadata(&self) -> &Metadata<Chunk> {
         &self.metadata
     }
-    fn update_metadata(&mut self, metadata: Metadata<Chunk>) -> Result<(), StoreError> {
+
+    /// Update store metadata, writing it to disk.
+    pub(crate) fn update_metadata(&mut self, metadata: Metadata<Chunk>) -> Result<(), StoreError> {
         self.metadata = metadata;
         Store::store_metadata(&self.root, &self.metadata).map_err(StoreError::MetadataStore)
     }
 
-    pub(super) fn load(&self, idx: ChunkIdx) -> Result<Chunk, ChunkLoadError> {
+    pub(crate) fn load_chunk(&self, idx: ChunkIdx) -> Result<Chunk, ChunkLoadError> {
         let path = self.chunk_path(idx)?;
         let chunk = chunk_io::load(&path)?;
         Ok(chunk)
     }
 
-    pub(super) fn alloc_chunk(&mut self) -> Result<u64, StoreError> {
+    pub(crate) fn alloc_chunk(&mut self) -> Result<u64, StoreError> {
         if self.chunk_count == ChunkIdx::MAX {
             return Err(StoreError::MaxSize);
         }
@@ -114,14 +126,14 @@ impl<Chunk: Serialize + DeserializeOwned + Default> Store<Chunk> {
         Ok(self.chunk_count)
     }
 
-    pub(super) fn store(&self, idx: ChunkIdx, chunk: Chunk) -> Result<(), ChunkStoreError> {
+    pub(crate) fn store_chunk(&self, idx: ChunkIdx, chunk: Chunk) -> Result<(), ChunkStoreError> {
         let path = self.chunk_path(idx)?;
         chunk_io::store(&chunk, &path)?;
 
         Ok(())
     }
 
-    pub(super) fn truncate(&mut self, len: u64) -> Result<(), StoreError> {
+    pub(crate) fn truncate(&mut self, len: u64) -> Result<(), StoreError> {
         if self.chunk_count <= len {
             return Ok(());
         }
@@ -138,7 +150,7 @@ impl<Chunk: Serialize + DeserializeOwned + Default> Store<Chunk> {
         Ok(())
     }
 
-    pub(super) fn len(&self) -> u64 {
+    pub(crate) fn len(&self) -> u64 {
         self.chunk_count
     }
 
@@ -250,7 +262,7 @@ mod test {
 
     fn create_store<T: Serialize + DeserializeOwned + Default>() -> (tempfile::TempDir, Store<T>) {
         let tmpdir = tempfile::tempdir().unwrap();
-        let store = Store::<T>::new(tmpdir.path().to_owned()).unwrap();
+        let store = Store::<T>::open(tmpdir.path().to_owned()).unwrap();
         (tmpdir, store)
     }
 
@@ -269,7 +281,7 @@ mod test {
         for (idx, _v) in data.iter().copied().enumerate() {
             assert!(
                 matches!(
-                    store.load(idx as ChunkIdx),
+                    store.load_chunk(idx as ChunkIdx),
                     Err(ChunkLoadError::IndexOutOfBounds(ChunkIndexOutOfBounds {
                         idx: idx_,
                         len: 0
@@ -281,13 +293,13 @@ mod test {
 
         for (idx, v) in data.iter().copied().enumerate() {
             store.alloc_chunk().expect("morechunks fail");
-            store.store(idx as ChunkIdx, v).expect("store fail");
+            store.store_chunk(idx as ChunkIdx, v).expect("store fail");
         }
         assert_eq!(store.len(), data.len() as ChunkIdx, "len mismatch");
 
         for (idx, v) in data.iter().copied().enumerate() {
             assert_eq!(
-                store.load(idx as ChunkIdx).expect("load fail"),
+                store.load_chunk(idx as ChunkIdx).expect("load fail"),
                 v,
                 "load mismatch"
             );
@@ -302,11 +314,11 @@ mod test {
 
         for (idx, v) in data.iter().copied().enumerate() {
             store.alloc_chunk().expect("morechunks fail");
-            store.store(idx as ChunkIdx, v).expect("store fail");
+            store.store_chunk(idx as ChunkIdx, v).expect("store fail");
         }
 
         std::mem::drop(store);
-        let store = Store::<i32>::new(dir.path().to_owned()).expect("reopen fail");
+        let store = Store::<i32>::open(dir.path().to_owned()).expect("reopen fail");
         assert_eq!(
             store.len(),
             data.len() as ChunkIdx,
@@ -315,7 +327,7 @@ mod test {
 
         for (idx, v) in data.iter().copied().enumerate() {
             assert_eq!(
-                store.load(idx as ChunkIdx).expect("load fail"),
+                store.load_chunk(idx as ChunkIdx).expect("load fail"),
                 v,
                 "load mismatch after reopen"
             );
@@ -326,7 +338,7 @@ mod test {
     fn store_fail_full() {
         let (_handle, store) = create_store();
         assert!(matches!(
-            store.store(0, 0),
+            store.store_chunk(0, 0),
             Err(ChunkStoreError::IndexOutOfBounds(ChunkIndexOutOfBounds {
                 idx: 0,
                 len: 0
@@ -338,20 +350,20 @@ mod test {
     #[cfg(target_os = "linux")]
     fn store_load_many_reopen() {
         let tempdir = tempfile::tempdir_in("/dev/shm").unwrap();
-        let mut store: Store<()> = Store::new(tempdir.path().to_owned()).unwrap();
+        let mut store: Store<()> = Store::open(tempdir.path().to_owned()).unwrap();
 
         for i in 0..3 * FIRST_LEVEL_BITMASK {
             store.alloc_chunk().expect("alloc fail");
-            store.store(i, ()).expect("store fail");
+            store.store_chunk(i, ()).expect("store fail");
         }
 
         assert_eq!(store.len(), 3 * FIRST_LEVEL_BITMASK);
         std::mem::drop(store);
 
-        let store: Store<()> = Store::new(tempdir.path().to_owned()).unwrap();
+        let store: Store<()> = Store::open(tempdir.path().to_owned()).unwrap();
         assert_eq!(store.len(), 3 * FIRST_LEVEL_BITMASK);
         for i in 0..3 * FIRST_LEVEL_BITMASK {
-            store.load(i).expect("load fail");
+            store.load_chunk(i).expect("load fail");
         }
     }
 }
