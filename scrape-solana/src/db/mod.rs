@@ -690,7 +690,7 @@ impl<
         Ok((discarded_left + discarded_right, discarded_acc))
     }
 
-    pub fn accounts_discard_after_corrupted(&mut self) -> eyre::Result<u64> {
+    fn accounts_discard_after_corrupted(&mut self) -> eyre::Result<u64> {
         let old_len = self.account_records.len().saturating_sub(1);
         for idx in 0..old_len {
             if let Err(e) = self.get_account_by_idx(idx) {
