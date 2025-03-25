@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-24.11";
+    nixpkgs.url = "flake:nixpkgs";
     pre-commit-hooks = {
       url = "github:cachix/pre-commit-hooks.nix";
       inputs = {
@@ -60,6 +60,7 @@
           pkg-config
           zstd
           rustup
+          openssl
         ]);
     };
 
