@@ -180,7 +180,7 @@ fn account_fetcher_actor(
         // keep min height
         let mut min_height = last_block_height;
 
-        // fetch accounts
+        // fetch accounts (in batches of 100 because that's the maximum the API allows)
         let all_account_ids = account_ids.iter().cloned().collect::<Vec<_>>();
         for account_ids in all_account_ids.chunks(100) {
             let raw_accounts = match fetch_raw_accounts(&api, account_ids, &should_stop) {
