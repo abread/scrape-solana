@@ -18,7 +18,7 @@ where
     T: Debug + Send + 'static,
     Store: IndexedStorage<Chunk<T, CHUNK_SZ>> + Send + Sync + 'static,
 {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     const N_ELEMENTS_ENDS: usize = 5;
     if n_samples > 2 * N_ELEMENTS_ENDS as u64 {
         n_samples -= 2 * N_ELEMENTS_ENDS as u64;
@@ -37,7 +37,7 @@ where
         )
         .chain(
             vec.iter()
-                .map(move |_| rng.gen_range(0..(vec.len())))
+                .map(move |_| rng.random_range(0..(vec.len())))
                 .filter(|&idx| {
                     idx < N_ELEMENTS_ENDS as u64
                         && idx > vec.len().saturating_sub(N_ELEMENTS_ENDS as u64)
