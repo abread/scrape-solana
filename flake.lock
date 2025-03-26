@@ -1,5 +1,41 @@
 {
   "nodes": {
+    "crane": {
+      "locked": {
+        "lastModified": 1742394900,
+        "narHash": "sha256-vVOAp9ahvnU+fQoKd4SEXB2JG2wbENkpqcwlkIXgUC0=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "70947c1908108c0c551ddfd73d4f750ff2ea67cd",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
+    "fenix": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-analyzer-src": []
+      },
+      "locked": {
+        "lastModified": 1742452566,
+        "narHash": "sha256-sVuLDQ2UIWfXUBbctzrZrXM2X05YjX08K7XHMztt36E=",
+        "owner": "nix-community",
+        "repo": "fenix",
+        "rev": "7d9ba794daf5e8cc7ee728859bc688d8e26d5f06",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "fenix",
+        "type": "github"
+      }
+    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -39,17 +75,15 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1738435198,
-        "narHash": "sha256-5+Hmo4nbqw8FrW85FlNm4IIrRnZ7bn0cmXlScNsNRLo=",
-        "path": "/nix/store/p6ccgjymrlv4wwnxkx9hbhz0rbd5mnlr-source",
-        "rev": "f6687779bf4c396250831aa5a32cbfeb85bb07a3",
+        "lastModified": 1742512142,
+        "narHash": "sha256-8XfURTDxOm6+33swQJu/hx6xw1Tznl8vJJN5HwVqckg=",
+        "path": "/nix/store/qjmsdak7fhqc7pi922i2mgm45f7af9h8-source",
+        "rev": "7105ae3957700a9646cc4b766f5815b23ed0c682",
         "type": "path"
       },
       "original": {
-        "owner": "nixos",
-        "ref": "nixos-24.11",
-        "repo": "nixpkgs",
-        "type": "github"
+        "id": "nixpkgs",
+        "type": "indirect"
       }
     },
     "pre-commit-hooks": {
@@ -79,6 +113,8 @@
     },
     "root": {
       "inputs": {
+        "crane": "crane",
+        "fenix": "fenix",
         "nixpkgs": "nixpkgs",
         "pre-commit-hooks": "pre-commit-hooks"
       }
