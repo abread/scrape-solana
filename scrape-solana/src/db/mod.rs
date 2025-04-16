@@ -114,7 +114,7 @@ fn open_existing(root_path: PathBuf, version: u64, mut out: impl io::Write) -> e
     }?;
 
     let _ = writeln!(out, "Auto-healing DB...");
-    let (issues, res) = db.heal(0);
+    let (issues, res) = db.quick_heal(0);
     for issue in issues {
         let _ = writeln!(out, " > {issue}");
     }
@@ -154,14 +154,14 @@ fn upgrade_db<
         "LOGIC BUG: db is already at latest version"
     );
 
-    let _ = writeln!(out, "running full heal on old db");
-    let (issues, res) = old_db.heal(u64::MAX);
+    let _ = writeln!(out, "running quick heal on old db");
+    let (issues, res) = old_db.quick_heal(u64::MAX);
     for issue in issues {
         let _ = writeln!(out, " > {issue}");
     }
     old_db.sync()?;
     res?;
-    let _ = writeln!(out, "full heal on old db complete");
+    let _ = writeln!(out, "quick heal on old db complete");
 
     let old_db = old_db; // make old db immutable
 
@@ -337,7 +337,7 @@ impl<const VERSION: u64, const BCS: usize, const TXCS: usize, const ARCS: usize,
         }
 
         if cfg!(debug_assertions) {
-            let (issues, res) = db.heal(u64::MAX);
+            let (issues, res) = db.quick_heal(u64::MAX);
             assert!(issues.is_empty());
             res.unwrap();
         }
@@ -413,12 +413,12 @@ impl<const VERSION: u64, const BCS: usize, const TXCS: usize, const ARCS: usize,
         Ok(db)
     }
 
-    fn heal(&mut self, n_samples: u64) -> (Vec<String>, eyre::Result<()>) {
+    fn quick_heal(&mut self, n_samples: u64) -> (Vec<String>, eyre::Result<()>) {
         let mut issues = Vec::new();
 
-        let r1 = self.left.heal(n_samples, &mut issues);
-        let r2 = self.right.heal(n_samples, &mut issues);
-        let r3 = self.heal_accounts(n_samples, &mut issues);
+        let r1 = self.left.quick_heal(n_samples, &mut issues);
+        let r2 = self.right.quick_heal(n_samples, &mut issues);
+        let r3 = self.quick_heal_accounts(n_samples, &mut issues);
         let r4 = Ok(()); //let r4 = self.heal_account_index(n_samples, &mut issues);
 
         (issues, self.sync().and(r1).and(r2).and(r3).and(r4))
@@ -466,7 +466,11 @@ impl<const VERSION: u64, const BCS: usize, const TXCS: usize, const ARCS: usize,
         true
     }*/
 
-    fn heal_accounts(&mut self, n_samples: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
+    fn quick_heal_accounts(
+        &mut self,
+        n_samples: u64,
+        issues: &mut Vec<String>,
+    ) -> eyre::Result<()> {
         if self.account_records.is_empty() {
             issues.push("account records empty, missing endcap: reinserting".to_owned());
             self.account_records.push(AccountRecord::endcap(0))?;

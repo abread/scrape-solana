@@ -112,7 +112,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         Ok(())
     }
 
-    pub fn heal(&mut self, n_samples: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
+    pub fn quick_heal(&mut self, n_samples: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
         if self.block_records.is_empty() {
             issues.push("block records empty, missing endcap: reinserting".to_owned());
             self.block_records.push(BlockRecord::endcap(0))?;
