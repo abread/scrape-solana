@@ -1,4 +1,4 @@
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use scrape_solana::{
     actors,
@@ -495,11 +495,7 @@ fn find_blocks_no_ts(args: StatsArgs) -> eyre::Result<()> {
                         db.blocks()
                             .filter_map(|mb| {
                                 let b = mb.expect("corrupted block");
-                                if b.ts.is_none() {
-                                    Some(b.slot)
-                                } else {
-                                    None
-                                }
+                                if b.ts.is_none() { Some(b.slot) } else { None }
                             })
                             .collect::<Vec<_>>()
                     }),

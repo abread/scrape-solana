@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::sync_channel;
 
-use eyre::{eyre, WrapErr};
+use eyre::{WrapErr, eyre};
 use itertools::Itertools;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 

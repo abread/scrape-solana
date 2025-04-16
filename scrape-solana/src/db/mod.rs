@@ -5,7 +5,7 @@ use crate::{
     model::Account,
     select_random_elements,
 };
-use eyre::{eyre, WrapErr};
+use eyre::{WrapErr, eyre};
 use std::collections::BTreeSet;
 use std::{
     io::{self, Write},
@@ -94,7 +94,7 @@ pub fn open_or_create(
     let version: u64 = match std::fs::read_to_string(root_path.join("version")) {
         Ok(v) => Ok(v),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Db::create(root_path, default_middle_slot_getter(), out)
+            return Db::create(root_path, default_middle_slot_getter(), out);
         }
         Err(e) => Err(e),
     }?
@@ -298,13 +298,8 @@ pub struct DbSlotLimits {
     pub right_ts: Option<i64>,
 }
 
-impl<
-        const VERSION: u64,
-        const BCS: usize,
-        const TXCS: usize,
-        const ARCS: usize,
-        const ADCS: usize,
-    > DbGeneric<VERSION, BCS, TXCS, ARCS, ADCS>
+impl<const VERSION: u64, const BCS: usize, const TXCS: usize, const ARCS: usize, const ADCS: usize>
+    DbGeneric<VERSION, BCS, TXCS, ARCS, ADCS>
 {
     const fn max_auto_account_data_loss() -> u64 {
         let three_blocks = ADCS as u64 * 3;
@@ -951,13 +946,13 @@ pub struct AccountIter<
     idx_back: u64,
 }
 impl<
-        'db,
-        const VERSION: u64,
-        const BCS: usize,
-        const TXCS: usize,
-        const ARCS: usize,
-        const ADCS: usize,
-    > AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
+    'db,
+    const VERSION: u64,
+    const BCS: usize,
+    const TXCS: usize,
+    const ARCS: usize,
+    const ADCS: usize,
+> AccountIter<'db, VERSION, BCS, TXCS, ARCS, ADCS>
 {
     fn new(db: &'db DbGeneric<VERSION, BCS, TXCS, ARCS, ADCS>) -> Self {
         Self {
@@ -968,13 +963,8 @@ impl<
     }
 }
 
-impl<
-        const VERSION: u64,
-        const BCS: usize,
-        const TXCS: usize,
-        const ARCS: usize,
-        const ADCS: usize,
-    > Iterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
+impl<const VERSION: u64, const BCS: usize, const TXCS: usize, const ARCS: usize, const ADCS: usize>
+    Iterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
 {
     type Item = eyre::Result<Account>;
     fn next(&mut self) -> Option<Self::Item> {
@@ -1011,13 +1001,8 @@ impl<
     }
 }
 
-impl<
-        const VERSION: u64,
-        const BCS: usize,
-        const TXCS: usize,
-        const ARCS: usize,
-        const ADCS: usize,
-    > DoubleEndedIterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
+impl<const VERSION: u64, const BCS: usize, const TXCS: usize, const ARCS: usize, const ADCS: usize>
+    DoubleEndedIterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.idx_back == 0 {
@@ -1050,25 +1035,15 @@ impl<
     }
 }
 
-impl<
-        const VERSION: u64,
-        const BCS: usize,
-        const TXCS: usize,
-        const ARCS: usize,
-        const ADCS: usize,
-    > ExactSizeIterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
+impl<const VERSION: u64, const BCS: usize, const TXCS: usize, const ARCS: usize, const ADCS: usize>
+    ExactSizeIterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
 {
     fn len(&self) -> usize {
         self.db.account_records.len().saturating_sub(1) as usize
     }
 }
 
-impl<
-        const VERSION: u64,
-        const BCS: usize,
-        const TXCS: usize,
-        const ARCS: usize,
-        const ADCS: usize,
-    > std::iter::FusedIterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
+impl<const VERSION: u64, const BCS: usize, const TXCS: usize, const ARCS: usize, const ADCS: usize>
+    std::iter::FusedIterator for AccountIter<'_, VERSION, BCS, TXCS, ARCS, ADCS>
 {
 }

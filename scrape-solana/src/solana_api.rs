@@ -86,7 +86,9 @@ impl SolanaApi {
                 kind: ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32007, .. }),
                 ..
             })) => {
-                eprintln!("skipped block slot={slot}: skipped, or missing due to ledger jump to recent snapshot");
+                eprintln!(
+                    "skipped block slot={slot}: skipped, or missing due to ledger jump to recent snapshot"
+                );
                 Ok(None)
             }
             Err(e) => Err(e),

@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     path::PathBuf,
-    sync::mpsc::{sync_channel, Receiver, SyncSender},
+    sync::mpsc::{Receiver, SyncSender, sync_channel},
     thread::JoinHandle,
 };
 

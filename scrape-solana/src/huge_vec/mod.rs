@@ -770,16 +770,16 @@ where
 #[cfg(test)]
 mod test {
     use std::io;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
 
     use crate::huge_vec::FsStore;
     use crate::huge_vec::IOTransformer;
 
-    use super::chunk_cache::READAHEAD_COUNT;
     use super::HugeVec;
     use super::ZstdTransformer;
+    use super::chunk_cache::READAHEAD_COUNT;
 
     macro_rules! test_push_readback {
         ($name:ident, $chunk_sz:literal * ( $chunk_count:expr ) + $extra_items:literal) => {

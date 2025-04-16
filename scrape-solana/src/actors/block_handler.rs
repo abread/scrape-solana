@@ -1,9 +1,9 @@
 use std::{
     collections::BTreeSet,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, SyncSender},
-        Arc,
     },
     time::{Duration, Instant},
 };

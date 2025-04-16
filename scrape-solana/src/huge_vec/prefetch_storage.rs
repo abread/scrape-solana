@@ -5,8 +5,8 @@ use std::{
     io,
     ops::DerefMut,
     sync::{
-        mpsc::{sync_channel, Receiver, SyncSender},
         Arc, LazyLock, RwLock,
+        mpsc::{Receiver, SyncSender, sync_channel},
     },
 };
 
@@ -121,7 +121,9 @@ where
                         }
                     }
                     Err(_) => {
-                        unreachable!("fetch result channel closed but we have references to both ends? rust std bug");
+                        unreachable!(
+                            "fetch result channel closed but we have references to both ends? rust std bug"
+                        );
                     }
                 }
             }

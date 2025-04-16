@@ -1,14 +1,14 @@
 use std::{
     fmt::Display,
     sync::{
-        mpsc::{sync_channel, Receiver, SyncSender},
         Arc,
+        mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::JoinHandle,
     time::Duration,
 };
 
-use eyre::{eyre, WrapErr};
+use eyre::{WrapErr, eyre};
 use solana_transaction_status::UiConfirmedBlock;
 
 use crate::{

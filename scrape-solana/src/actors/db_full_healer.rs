@@ -1,13 +1,13 @@
 use std::{
     path::PathBuf,
     sync::{
-        mpsc::{sync_channel, Receiver, SyncSender},
         Arc,
+        mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::JoinHandle,
 };
 
-use eyre::{eyre, WrapErr};
+use eyre::{WrapErr, eyre};
 use itertools::Itertools;
 
 use crate::{

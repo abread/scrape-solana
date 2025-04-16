@@ -1,8 +1,8 @@
 use std::{cell::RefCell, collections::BTreeMap, fmt::Debug, rc::Rc};
 
 use super::{
-    prefetch_storage::{FetchReq, PrefetchableStore},
     Chunk, IndexedStorage,
+    prefetch_storage::{FetchReq, PrefetchableStore},
 };
 use std::{
     borrow::Borrow,
@@ -196,10 +196,12 @@ where
         {
             let removed = self.cached_chunks.remove(&chunk_idx);
             removed_chunks = true;
-            debug_assert!(!Rc::try_unwrap(removed.unwrap().0)
-                .unwrap()
-                .into_inner()
-                .is_dirty());
+            debug_assert!(
+                !Rc::try_unwrap(removed.unwrap().0)
+                    .unwrap()
+                    .into_inner()
+                    .is_dirty()
+            );
         }
 
         if removed_chunks {

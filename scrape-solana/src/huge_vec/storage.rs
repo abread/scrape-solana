@@ -1,4 +1,4 @@
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     borrow::Borrow,
     collections::HashMap,
@@ -9,9 +9,9 @@ use std::{
     ops::BitAnd,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc::{sync_channel, Receiver, SyncSender},
         Arc, Condvar, LazyLock, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{Receiver, SyncSender, sync_channel},
     },
 };
 use tempfile::NamedTempFile;

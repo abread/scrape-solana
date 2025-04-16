@@ -1,12 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
     iter::FusedIterator,
-    sync::mpsc::{sync_channel, Receiver, SyncSender},
+    sync::mpsc::{Receiver, SyncSender, sync_channel},
 };
 
 use crate::{huge_vec::PREFETCH_THREADPOOL, model::Block};
 
-use super::{check_rebuild_block, MonotonousBlockDb};
+use super::{MonotonousBlockDb, check_rebuild_block};
 
 pub struct BlockIter<'db, const BCS: usize, const TXCS: usize> {
     db: &'db MonotonousBlockDb<BCS, TXCS>,
