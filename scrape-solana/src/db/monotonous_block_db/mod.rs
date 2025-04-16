@@ -198,6 +198,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
                 BlockRecord::endcap(txs_next_start_idx),
             );
             self.block_records.truncate(self.block_records.len() - 1)?;
+            self.txs.truncate(txs_next_start_idx)?;
         }
 
         Ok(())
