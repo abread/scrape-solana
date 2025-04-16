@@ -18,25 +18,25 @@ use crate::{
 
 use super::db::DbOperation;
 
-pub enum DBFullHealerOperation {
+pub enum DBGapHealerOperation {
     Cancel,
 }
 
-pub fn spawn_db_full_healer(
+pub fn spawn_db_gap_healer(
     orig_db_path: PathBuf,
     step: u64,
     api: Arc<SolanaApi>,
     block_handler_tx: SyncSender<Block>,
     db_tx: SyncSender<DbOperation>,
 ) -> (
-    SyncSender<DBFullHealerOperation>,
+    SyncSender<DBGapHealerOperation>,
     JoinHandle<eyre::Result<()>>,
 ) {
     let (tx, rx) = sync_channel(1);
     let handle = std::thread::Builder::new()
-        .name("db_full_healer".to_owned())
+        .name("db_gap_healer".to_owned())
         .spawn(move || {
-            match db_full_healer_actor(orig_db_path, step, rx, api, block_handler_tx, db_tx) {
+            match db_gap_healer_actor(orig_db_path, step, rx, api, block_handler_tx, db_tx) {
                 Ok(x) => Ok(x),
                 Err(e) => {
                     eprintln!("block fetcher actor failed: {e}");
@@ -48,10 +48,10 @@ pub fn spawn_db_full_healer(
     (tx, handle)
 }
 
-fn db_full_healer_actor(
+fn db_gap_healer_actor(
     orig_db_path: PathBuf,
     step: u64,
-    rx: Receiver<DBFullHealerOperation>,
+    rx: Receiver<DBGapHealerOperation>,
     api: Arc<SolanaApi>,
     block_handler_tx: SyncSender<Block>,
     db_tx: SyncSender<DbOperation>,
@@ -66,7 +66,7 @@ fn db_full_healer_actor(
         .into_iter()
         .map(|chunk| chunk.collect_vec())
     {
-        if let Ok(DBFullHealerOperation::Cancel) = rx.try_recv() {
+        if let Ok(DBGapHealerOperation::Cancel) = rx.try_recv() {
             return Err(eyre!("heal cancelled"));
         }
 
@@ -97,7 +97,7 @@ fn db_full_healer_actor(
         std::thread::Builder::new()
             .name("db-heal-l".to_owned())
             .spawn(move || {
-                match block_db_full_healer_actor(
+                match block_db_gap_healer_actor(
                     left,
                     range,
                     left_cancel_rx,
@@ -131,7 +131,7 @@ fn db_full_healer_actor(
         std::thread::Builder::new()
             .name("db-heal-r".to_owned())
             .spawn(move || {
-                match block_db_full_healer_actor(
+                match block_db_gap_healer_actor(
                     right,
                     range,
                     right_cancel_rx,
@@ -152,9 +152,9 @@ fn db_full_healer_actor(
     let _cancel_handle = std::thread::Builder::new()
         .name("db-heal-cancel".to_owned())
         .spawn(move || {
-            if let Ok(DBFullHealerOperation::Cancel) = rx.recv() {
-                let _ = left_cancel_tx.send(DBFullHealerOperation::Cancel);
-                let _ = right_cancel_tx.send(DBFullHealerOperation::Cancel);
+            if let Ok(DBGapHealerOperation::Cancel) = rx.recv() {
+                let _ = left_cancel_tx.send(DBGapHealerOperation::Cancel);
+                let _ = right_cancel_tx.send(DBGapHealerOperation::Cancel);
             }
         })
         .expect("failed to spawn db-heal-cancel thread");
@@ -166,16 +166,16 @@ fn db_full_healer_actor(
         .join()
         .expect("left db healer thread panicked")?;
 
-    // don't call _cancel_handle.join() or you will deadlock joining the full heal thread until the
+    // don't call _cancel_handle.join() or you will deadlock joining the gap heal thread until the
     // cancel channel tx is dropped (hard if it's inside a Ctrl-C handler)
 
     Ok(())
 }
 
-fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
+fn block_db_gap_healer_actor<const BCS: usize, const TXCS: usize>(
     db: db::MonotonousBlockDb<BCS, TXCS>,
     slots: impl Iterator<Item = u64>,
-    cancel_rx: Receiver<DBFullHealerOperation>,
+    cancel_rx: Receiver<DBGapHealerOperation>,
     api: Arc<SolanaApi>,
     block_handler_tx: SyncSender<Block>,
     db_tx: SyncSender<DbOperation>,
@@ -196,7 +196,7 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
 
     for slot_chunk in slots.chunks(db::DB_PARAMS.block_rec_cs).into_iter() {
         'filler_loop: for slot in slot_chunk {
-            if let Ok(DBFullHealerOperation::Cancel) = cancel_rx.try_recv() {
+            if let Ok(DBGapHealerOperation::Cancel) = cancel_rx.try_recv() {
                 return Err(eyre!("Heal cancelled"));
             }
 
@@ -213,7 +213,7 @@ fn block_db_full_healer_actor<const BCS: usize, const TXCS: usize>(
             } else {
                 eprintln!("refetching {slot}");
                 loop {
-                    if let Ok(DBFullHealerOperation::Cancel) = cancel_rx.try_recv() {
+                    if let Ok(DBGapHealerOperation::Cancel) = cancel_rx.try_recv() {
                         return Err(eyre!("Heal cancelled"));
                     }
 

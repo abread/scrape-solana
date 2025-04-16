@@ -35,8 +35,8 @@ enum Command {
     Stats(StatsArgs),
     /// Display fast-computed stats on one or more Solana databases
     QuickStats(StatsArgs),
-    /// Fully heal a corrupted database fetching any missing blocks/txs.
-    FullHeal(ScrapeArgs),
+    /// Fill gaps on a corrupted database fetching any missing blocks/txs.
+    GapHeal(ScrapeArgs),
     /// Compute a checksum summarizing all data in one or more Solana DBs
     Checksum(StatsArgs),
     /// Find blocks without timestamp
@@ -130,7 +130,7 @@ fn main() -> Result<()> {
         Command::Scrape(scrape_args) => scrape(scrape_args),
         Command::Stats(stats_args) => stats(stats_args),
         Command::QuickStats(stats_args) => quickstats(stats_args),
-        Command::FullHeal(args) => full_heal(args),
+        Command::GapHeal(args) => gap_heal(args),
         Command::Checksum(args) => checksum(args),
         Command::FindBlocksWithoutTs(args) => find_blocks_no_ts(args),
         Command::TopContracts(args) => top_contracts(args),
@@ -380,20 +380,18 @@ fn stats(args: StatsArgs) -> eyre::Result<()> {
     Ok(())
 }
 
-fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
+fn gap_heal(args: ScrapeArgs) -> eyre::Result<()> {
     let old_db = db::open(args.db_root_path.clone(), std::io::stdout())?;
     let middle_slot = old_db.slot_limits()?.middle_slot;
 
     println!("creating new db");
-    let new_path = args.db_root_path.join("full-heal");
+    let new_path = args.db_root_path.join("gap-heal");
     {
         let mut new_db =
             db::open_or_create(new_path.to_owned(), || middle_slot, std::io::stdout())?;
         new_db.sync()?;
 
-        eprintln!(
-            "discarding corrupted data from new db from previous full-heal attempts (if any)"
-        );
+        eprintln!("discarding corrupted data from new db from previous gap-heal attempts (if any)");
         let (discarded_blocks, discarded_accounts) = new_db.discard_after_corrupted()?;
         eprintln!(" -> discarded {discarded_blocks} blocks and {discarded_accounts} accounts");
 
@@ -406,7 +404,7 @@ fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
     let (db_tx, db_handle) = actors::spawn_db_actor(new_path.to_owned(), move || middle_slot);
     let (_, block_handler_tx, block_handler_handle, block_converter_handle) =
         actors::spawn_block_handler(Arc::clone(&api), db_tx.clone());
-    let (healer_tx, healer_handle) = actors::spawn_db_full_healer(
+    let (healer_tx, healer_handle) = actors::spawn_db_gap_healer(
         args.db_root_path.clone(),
         args.shard_config.n,
         api,
@@ -417,7 +415,7 @@ fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
     ctrlc::set_handler(move || {
         println!("received stop signal");
         healer_tx
-            .send(actors::DBFullHealerOperation::Cancel)
+            .send(actors::DBGapHealerOperation::Cancel)
             .expect("could not send stop signal to healer");
     })
     .wrap_err("could not set Ctrl+C handler")?;
@@ -446,7 +444,7 @@ fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
     });
     std::fs::rename(&args.db_root_path, &old_path)
         .wrap_err("failed to rename old DB to temporary path")?;
-    std::fs::rename(old_path.join("full-heal"), &args.db_root_path)
+    std::fs::rename(old_path.join("gap-heal"), &args.db_root_path)
         .wrap_err("failed to rename new DB to final path")?;
 
     println!("db moved to final path, removing old db");
