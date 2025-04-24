@@ -37,6 +37,8 @@ enum Command {
     QuickStats(StatsArgs),
     /// Fill gaps on a corrupted database fetching any missing blocks/txs.
     GapHeal(ScrapeArgs),
+    /// Fully heal a corrupted database, retrieving all blocks from it, and fully reconstructing a new database with them, filling in the gaps from the network.
+    FullHeal(ScrapeArgs),
     /// Compute a checksum summarizing all data in one or more Solana DBs
     Checksum(StatsArgs),
     /// Find blocks without timestamp
@@ -131,6 +133,7 @@ fn main() -> Result<()> {
         Command::Stats(stats_args) => stats(stats_args),
         Command::QuickStats(stats_args) => quickstats(stats_args),
         Command::GapHeal(args) => gap_heal(args),
+        Command::FullHeal(args) => full_heal(args),
         Command::Checksum(args) => checksum(args),
         Command::FindBlocksWithoutTs(args) => find_blocks_no_ts(args),
         Command::TopContracts(args) => top_contracts(args),
@@ -445,6 +448,115 @@ fn gap_heal(args: ScrapeArgs) -> eyre::Result<()> {
     std::fs::rename(&args.db_root_path, &old_path)
         .wrap_err("failed to rename old DB to temporary path")?;
     std::fs::rename(old_path.join("gap-heal"), &args.db_root_path)
+        .wrap_err("failed to rename new DB to final path")?;
+
+    println!("db moved to final path, removing old db");
+    std::fs::remove_dir_all(old_path).wrap_err("failed to remove old DB")?;
+
+    println!("heal complete!");
+
+    Ok(())
+}
+
+fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
+    let old_db = db::open(args.db_root_path.clone(), std::io::stdout())?;
+    let middle_slot = old_db.slot_limits()?.middle_slot;
+
+    let (cancel_tx, cancel_rx) = std::sync::mpsc::sync_channel(0);
+
+    // ctrlc handler may be called multiple times, but we can only drop channel_tx once
+    // thus, we use an Option to track if we have already dropped it
+    let mut cancel_tx = Some(cancel_tx);
+    ctrlc::set_handler(move || {
+        println!("received stop signal");
+        std::mem::drop(cancel_tx.take()); // close the channel, making it stop
+    })
+    .wrap_err("could not set Ctrl+C handler")?;
+
+    println!("recovering all blocks from old db");
+    let (cancel_rx, recovered_blocks) = actors::recover_blocks_from_db(
+        old_db,
+        cancel_rx,
+        args.db_root_path.join("recovered-blocks"),
+    )?;
+
+    println!("checking sharding consistency in recovered blocks");
+    recovered_blocks.assert_sharding_consistency(args.shard_config.n, args.shard_config.id);
+
+    println!("creating new db");
+    let new_path = args.db_root_path.join("full-heal");
+    {
+        let mut new_db = db::open_or_create(
+            new_path.to_owned(),
+            || {
+                recovered_blocks
+                    .limits()
+                    .expect("no blocks were recovered!!")
+                    .1
+            },
+            std::io::stdout(),
+        )?;
+        new_db.sync()?;
+
+        eprintln!(
+            "discarding corrupted data from new db from previous full-heal attempts (if any)"
+        );
+        let (discarded_blocks, discarded_accounts) = new_db.discard_after_corrupted()?;
+        eprintln!(" -> discarded {discarded_blocks} blocks and {discarded_accounts} accounts");
+
+        if !new_db.accounts().any(|_| true) && new_db.block_count() == 0 {
+            eprintln!("recovering accounts from old db");
+
+            let old_db = db::open(args.db_root_path.clone(), std::io::stdout())?;
+
+            for account in old_db.accounts().flatten() {
+                new_db.store_new_account(account)?;
+            }
+        }
+
+        new_db.sync()?;
+    }
+
+    println!("copying data from old db where possible, filling in the gaps from the network");
+
+    let api = Arc::new(SolanaApi::new(args.endpoint_url.clone()));
+    let (db_tx, db_handle) = actors::spawn_db_actor(new_path.to_owned(), move || middle_slot);
+    let (_, block_handler_tx, block_handler_handle, block_converter_handle) =
+        actors::spawn_block_handler(Arc::clone(&api), db_tx.clone());
+    let healer_handle = actors::spawn_db_full_healer(
+        recovered_blocks,
+        args.shard_config.n,
+        api,
+        block_handler_tx,
+        db_tx,
+        cancel_rx,
+    );
+
+    let bc_res = block_converter_handle.join();
+    let bh_res = block_handler_handle.join();
+    let db_res = db_handle.join();
+    let h_res = healer_handle.join();
+
+    bc_res.expect("block converter panicked")?;
+    bh_res.expect("block handler panicked")?;
+    h_res.expect("healer panicked")?;
+    db_res.expect("db actor panicked")?;
+
+    println!("done copying data");
+
+    println!("renaming old db to temp path and new db to final path");
+    let old_path = args.db_root_path.as_path().with_extension({
+        let mut ext = args
+            .db_root_path
+            .extension()
+            .map(|r| r.to_owned())
+            .unwrap_or_default();
+        ext.push(".old");
+        ext
+    });
+    std::fs::rename(&args.db_root_path, &old_path)
+        .wrap_err("failed to rename old DB to temporary path")?;
+    std::fs::rename(old_path.join("full-heal"), &args.db_root_path)
         .wrap_err("failed to rename new DB to final path")?;
 
     println!("db moved to final path, removing old db");
