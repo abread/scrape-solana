@@ -41,6 +41,18 @@ where
         })
     }
 
+    pub(crate) fn assume_max_size_for_heal(&mut self) -> Result<(), Store::Error> {
+        // mixing this with a writeback cache can get gnarly
+        assert!(
+            self.cached_chunks
+                .values()
+                .all(|(chunk, _)| !chunk.deref().borrow().is_dirty())
+        );
+        let chunk_count = self.chunk_store.assume_max_size_for_heal()?;
+        self.chunk_count = chunk_count;
+        Ok(())
+    }
+
     pub(crate) fn get(
         &mut self,
         chunk_idx: usize,

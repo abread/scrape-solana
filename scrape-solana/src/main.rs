@@ -459,7 +459,8 @@ fn gap_heal(args: ScrapeArgs) -> eyre::Result<()> {
 }
 
 fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
-    let old_db = db::open(args.db_root_path.clone(), std::io::stdout())?;
+    let mut old_db = db::open_no_heal(args.db_root_path.clone(), std::io::stdout())?;
+    old_db.assume_max_size_for_heal()?;
     let middle_slot = old_db.slot_limits()?.middle_slot;
 
     let (cancel_tx, cancel_rx) = std::sync::mpsc::sync_channel(0);

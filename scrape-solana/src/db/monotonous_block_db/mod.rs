@@ -112,6 +112,16 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
         Ok(())
     }
 
+    pub fn assume_max_size_for_heal(&mut self) -> eyre::Result<()> {
+        self.block_records
+            .assume_max_size_for_heal()
+            .wrap_err("failed to assume max size for heal")?;
+        self.txs
+            .assume_max_size_for_heal()
+            .wrap_err("failed to assume max size for heal")?;
+        Ok(())
+    }
+
     pub fn quick_heal(&mut self, n_samples: u64, issues: &mut Vec<String>) -> eyre::Result<()> {
         if self.block_records.is_empty() {
             issues.push("block records empty, missing endcap: reinserting".to_owned());

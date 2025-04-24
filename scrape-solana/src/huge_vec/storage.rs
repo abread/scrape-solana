@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     borrow::Borrow,
-    collections::HashMap,
+    collections::{BinaryHeap, HashMap},
     fmt::Debug,
     fs,
     io::{self, BufReader, BufWriter, Seek},
@@ -39,6 +39,9 @@ pub trait IndexedStorage<T> {
     }
 
     fn sync(&mut self) -> Result<(), Self::Error>;
+    fn assume_full_size_for_heal(&mut self) -> Result<usize, Self::Error> {
+        self.len()
+    }
 }
 
 use crate::huge_vec::IOTransformer;
@@ -398,6 +401,14 @@ where
 
         Ok(())
     }
+
+    fn assume_full_size_for_heal(&mut self) -> Result<usize, Self::Error> {
+        let len = count_chunks_greedy(&self.root).map_err(FsStoreError::DataOpen)?;
+
+        self.metadata.len = len;
+
+        Ok(len)
+    }
 }
 
 impl<T, IOT> Drop for FsStore<T, IOT>
@@ -474,6 +485,84 @@ impl BasicStorageMeta {
 
         Ok(())
     }
+}
+
+fn count_chunks_greedy(root: &Path) -> Result<usize, io::Error> {
+    // data.AAAA/BBBB/CCCC/AAAABBBBCCCCDDDD
+    const TREE_LEVELS: usize = 4;
+    const LEVEL_BITS: usize = 4 * 4;
+
+    let mut queue = BinaryHeap::new();
+    queue.push((0_u64, 0_usize, root.to_owned())); // (max_count_prefix, level, path_prefix)
+
+    while let Some((max_count_prefix, lvl, path)) = queue.pop() {
+        let path: &Path = &path; // helps debugging
+
+        if lvl == TREE_LEVELS - 1 {
+            // only files
+            let mut max: Option<u64> = None;
+
+            for sub in fs::read_dir(path)? {
+                let sub = sub?;
+                if sub.file_type()?.is_file() {
+                    let name = sub.file_name();
+                    let Some(name) = name.to_str() else {
+                        continue;
+                    };
+
+                    let Ok(n) = u64::from_str_radix(name, 16) else {
+                        continue;
+                    };
+
+                    assert_eq!(max_count_prefix, n & (u64::MAX >> LEVEL_BITS) << LEVEL_BITS);
+                    assert!(n < usize::MAX as u64);
+
+                    max = max.map(|m| m.max(n)).or(Some(n));
+                }
+            }
+
+            if let Some(max) = max {
+                assert!(max < usize::MAX as u64);
+                return Ok(max as usize);
+            }
+        } else {
+            for sub in fs::read_dir(path)? {
+                let sub = sub?;
+                if sub.file_type()?.is_dir() {
+                    let name = sub.file_name();
+                    let Some(name) = name.to_str() else {
+                        continue;
+                    };
+                    let name_num = if lvl == 0 {
+                        if let Some(n) = name.strip_prefix("data.") {
+                            n
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        name
+                    };
+
+                    let Ok(n) = u64::from_str_radix(name_num, 16) else {
+                        continue;
+                    };
+
+                    assert!(
+                        n < 1 << LEVEL_BITS,
+                        "corrupted dir name: level idx larger than max size"
+                    );
+
+                    queue.push((
+                        max_count_prefix + (n << (LEVEL_BITS * (TREE_LEVELS - lvl - 1))),
+                        lvl + 1,
+                        path.join(name),
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(0)
 }
 
 #[cfg(test)]

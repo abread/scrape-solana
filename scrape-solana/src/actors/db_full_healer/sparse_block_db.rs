@@ -58,7 +58,7 @@ pub fn recover_blocks_from_db<T: Send>(
                         if let Err(TryRecvError::Disconnected) =
                             close_signal.lock().unwrap().try_recv()
                         {
-                            return;
+                            break; // not return, to avoid deadlock on completion barrier
                         }
 
                         if let Ok(b) = block {

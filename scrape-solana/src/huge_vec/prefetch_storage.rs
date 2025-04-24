@@ -51,6 +51,13 @@ where
         })
     }
 
+    pub(super) fn assume_max_size_for_heal(&mut self) -> Result<usize, InnerStore::Error> {
+        self.store
+            .write()
+            .expect("lock poisoned")
+            .assume_full_size_for_heal()
+    }
+
     pub(in crate::huge_vec) fn invalidate_prefetches(&mut self) {
         // drop all pending prefetches
         while let Ok((req, _)) = self.fetch_res_rx.try_recv() {

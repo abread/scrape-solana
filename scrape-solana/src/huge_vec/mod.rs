@@ -69,6 +69,13 @@ where
         })
     }
 
+    pub fn assume_max_size_for_heal(&mut self) -> Result<(), HugeVecError<Store::Error>> {
+        let mut chunk_cache = self.chunk_cache.borrow_mut();
+        chunk_cache.assume_max_size_for_heal()?;
+        self.len = chunk_cache.chunk_count() as u64 * CHUNK_SZ as u64;
+        Ok(())
+    }
+
     pub fn push(&mut self, val: T) -> Result<(), HugeVecError<Store::Error>> {
         let idx = self.len;
         let chunk_idx = (idx / CHUNK_SZ as u64) as usize;

@@ -76,42 +76,14 @@ pub const LATEST_VERSION: u64 = DB_PARAMS_BY_VERSION.len() as u64 - 1;
 pub const DB_PARAMS: DbParams = DB_PARAMS_BY_VERSION[LATEST_VERSION as usize];
 pub type Db = DbV2;
 
-pub fn open(root_path: PathBuf, out: impl io::Write) -> eyre::Result<Db> {
+pub fn open(root_path: PathBuf, mut out: impl io::Write) -> eyre::Result<Db> {
     let version: u64 = match std::fs::read_to_string(root_path.join("version")) {
         Ok(v) => Ok(v),
         Err(e) => Err(e),
     }?
     .parse()?;
 
-    open_existing(root_path, version, out)
-}
-
-pub fn open_or_create(
-    root_path: PathBuf,
-    default_middle_slot_getter: impl FnOnce() -> u64,
-    out: impl io::Write,
-) -> eyre::Result<Db> {
-    let version: u64 = match std::fs::read_to_string(root_path.join("version")) {
-        Ok(v) => Ok(v),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Db::create(root_path, default_middle_slot_getter(), out);
-        }
-        Err(e) => Err(e),
-    }?
-    .parse()?;
-
-    open_existing(root_path, version, out)
-}
-
-fn open_existing(root_path: PathBuf, version: u64, mut out: impl io::Write) -> eyre::Result<Db> {
-    let mut db = match version {
-        1 => {
-            let old_db = DbV1::open_existing(root_path.clone())?;
-            upgrade_db(root_path, version, old_db, &mut out)
-        }
-        2 => Db::open_existing(root_path),
-        _ => Err(eyre!("unsupported version: {version}")),
-    }?;
+    let mut db = open_existing(root_path, version, &mut out)?;
 
     let _ = writeln!(out, "Auto-healing DB...");
     let (issues, res) = db.quick_heal(0);
@@ -134,6 +106,79 @@ fn open_existing(root_path: PathBuf, version: u64, mut out: impl io::Write) -> e
     );
 
     Ok(db)
+}
+
+pub fn open_no_heal(root_path: PathBuf, mut out: impl io::Write) -> eyre::Result<Db> {
+    let version: u64 = match std::fs::read_to_string(root_path.join("version")) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(e),
+    }?
+    .parse()?;
+
+    let db = open_existing(root_path, version, &mut out)?;
+
+    let _ = writeln!(
+        out,
+        "loaded {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
+        db.left.block_records.len() - 1,
+        db.right.block_records.len() - 1,
+        db.left.txs.len(),
+        db.right.txs.len(),
+        db.account_records.len() - 1,
+        db.account_data.len()
+    );
+
+    Ok(db)
+}
+
+pub fn open_or_create(
+    root_path: PathBuf,
+    default_middle_slot_getter: impl FnOnce() -> u64,
+    mut out: impl io::Write,
+) -> eyre::Result<Db> {
+    let version: u64 = match std::fs::read_to_string(root_path.join("version")) {
+        Ok(v) => Ok(v),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Db::create(root_path, default_middle_slot_getter(), &mut out);
+        }
+        Err(e) => Err(e),
+    }?
+    .parse()?;
+
+    let mut db = open_existing(root_path, version, &mut out)?;
+
+    let _ = writeln!(out, "Auto-healing DB...");
+    let (issues, res) = db.quick_heal(0);
+    for issue in issues {
+        let _ = writeln!(out, " > {issue}");
+    }
+    db.sync()?;
+    res.wrap_err("Failed to auto-heal DB")?;
+    let _ = writeln!(out, "DB healed");
+
+    let _ = writeln!(
+        out,
+        "loaded {}+{} blocks, {}+{} txs, {} accounts and {}B of account data",
+        db.left.block_records.len() - 1,
+        db.right.block_records.len() - 1,
+        db.left.txs.len(),
+        db.right.txs.len(),
+        db.account_records.len() - 1,
+        db.account_data.len()
+    );
+
+    Ok(db)
+}
+
+fn open_existing(root_path: PathBuf, version: u64, mut out: impl io::Write) -> eyre::Result<Db> {
+    match version {
+        1 => {
+            let old_db = DbV1::open_existing(root_path.clone())?;
+            upgrade_db(root_path, version, old_db, &mut out)
+        }
+        2 => Db::open_existing(root_path),
+        _ => Err(eyre!("unsupported version: {version}")),
+    }
 }
 
 fn upgrade_db<
@@ -411,6 +456,18 @@ impl<const VERSION: u64, const BCS: usize, const TXCS: usize, const ARCS: usize,
         };
 
         Ok(db)
+    }
+
+    pub fn assume_max_size_for_heal(&mut self) -> eyre::Result<()> {
+        self.left.assume_max_size_for_heal()?;
+        self.right.assume_max_size_for_heal()?;
+        self.account_records
+            .assume_max_size_for_heal()
+            .wrap_err("failed to assume max size for account records")?;
+        self.account_data
+            .assume_max_size_for_heal()
+            .wrap_err("failed to assume max size for account data")?;
+        Ok(())
     }
 
     fn quick_heal(&mut self, n_samples: u64) -> (Vec<String>, eyre::Result<()>) {
