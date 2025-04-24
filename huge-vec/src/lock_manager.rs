@@ -1,6 +1,8 @@
 use std::sync::Condvar;
 use std::{collections::BTreeMap, sync::Mutex};
 
+// TODO: evaluate what range_set crate does, see if its better
+
 /// A manager for locking ranges of a vector.
 pub(crate) struct LockManager {
     locks: Mutex<BTreeMap<LockRange, LockData>>,
