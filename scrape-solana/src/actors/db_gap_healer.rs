@@ -39,12 +39,12 @@ pub fn spawn_db_gap_healer(
             match db_gap_healer_actor(orig_db_path, step, rx, api, block_handler_tx, db_tx) {
                 Ok(x) => Ok(x),
                 Err(e) => {
-                    eprintln!("block fetcher actor failed: {e}");
+                    eprintln!("db gap healer actor failed: {e}");
                     Err(e)
                 }
             }
         })
-        .expect("failed to spawn block fetcher actor thread");
+        .expect("failed to spawn db gap healer actor thread");
     (tx, handle)
 }
 
