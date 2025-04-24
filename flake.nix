@@ -105,6 +105,11 @@
       };
     };
 
+    apps.${system}.default = {
+      type = "app";
+      program = "${self.packages.${system}.img-builder}";
+    };
+
     formatter.${system} = pkgs.alejandra;
   };
 }
