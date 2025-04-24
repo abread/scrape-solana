@@ -237,3 +237,12 @@ impl SparseBlockDb {
         })
     }
 }
+
+impl Drop for SparseBlockDb {
+    fn drop(&mut self) {
+        self.await_pending_writes();
+
+        // call sync to ensure changes are truly persisted to disk
+        rustix::fs::sync();
+    }
+}
