@@ -162,7 +162,7 @@ where
             })
             .filter(|(_, (cached_chunk, _))| {
                 let c = RefCell::borrow(cached_chunk);
-                c.is_dirty() && c.len() > 0
+                c.is_dirty() && !c.is_empty()
             })
             .min_by_key(|(_, (_, last_used))| *last_used)
         {
