@@ -146,7 +146,7 @@ impl<const BCS: usize, const TXCS: usize> Iterator for BlockIter<'_, BCS, TXCS> 
         if self.idx >= self.max_idx {
             None
         } else {
-            assert!(
+            debug_assert!(
                 !self
                     .db
                     .block_records
@@ -155,6 +155,19 @@ impl<const BCS: usize, const TXCS: usize> Iterator for BlockIter<'_, BCS, TXCS> 
                     .expect("bad block record"),
                 "corrupted block records"
             );
+            while self
+                .db
+                .block_records
+                .get(self.idx)
+                .map(|r| r.is_endcap())
+                .unwrap_or(true)
+                && self.idx < self.max_idx
+            {
+                self.idx += 1;
+            }
+            if self.idx >= self.max_idx {
+                return None;
+            }
 
             let block = self.get_block(self.idx, 1);
             self.idx += 1;
@@ -182,7 +195,7 @@ impl<const BCS: usize, const TXCS: usize> DoubleEndedIterator for BlockIter<'_, 
         } else {
             self.idx_back -= 1;
 
-            assert!(
+            debug_assert!(
                 !self
                     .db
                     .block_records
@@ -191,6 +204,20 @@ impl<const BCS: usize, const TXCS: usize> DoubleEndedIterator for BlockIter<'_, 
                     .expect("bad block record"),
                 "corrupted block records"
             );
+            while self
+                .db
+                .block_records
+                .get(self.idx_back)
+                .map(|r| r.is_endcap())
+                .unwrap_or(true)
+                && self.idx_back > self.min_idx
+            {
+                self.idx_back = self.idx_back.saturating_sub(1);
+            }
+            if self.idx_back <= self.min_idx {
+                return None;
+            }
+
             Some(self.get_block(self.idx_back, -1))
         }
     }
