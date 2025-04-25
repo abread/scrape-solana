@@ -137,7 +137,7 @@ impl SparseBlockDb {
                 .expect("Failed to create temp file");
 
             {
-                let mut writer = zstd::stream::Encoder::new(&mut temp_file, 22)
+                let mut writer = zstd::stream::Encoder::new(&mut temp_file, 19)
                     .expect("failed to create zstd-compressing writer");
                 bincode::serialize_into(&mut writer, &block)
                     .expect("Failed to serialize block to file");
