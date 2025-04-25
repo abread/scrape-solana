@@ -215,6 +215,8 @@ impl SparseBlockDb {
         while *pending_write_count > 0 {
             pending_write_count = self.pending_write_zeroed.wait(pending_write_count).unwrap();
         }
+
+        IO_THREAD_POOL.broadcast(|_| ()); // ensure Arc<Self>s are dropped too
     }
 
     fn slot_numbers(&self) -> Vec<u64> {
