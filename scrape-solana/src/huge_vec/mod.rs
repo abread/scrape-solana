@@ -430,8 +430,7 @@ where
         let chunk_idx = (idx / CHUNK_SZ as u64) as usize;
         let chunk_offset = (idx % CHUNK_SZ as u64) as usize;
 
-        let cached_chunk = self.chunk_cache.borrow_mut().get(chunk_idx)?;
-        let chunk_rc = Rc::clone(&cached_chunk);
+        let chunk_rc = self.chunk_cache.borrow_mut().get(chunk_idx)?;
 
         // create a reference to the chunk data that lives as long as needed
         // Safety: we will not drop chunk_rc while the reference (and any others derivable from it) are still in use
@@ -463,8 +462,7 @@ where
         let chunk_idx = (idx / CHUNK_SZ as u64) as usize;
         let chunk_offset = (idx % CHUNK_SZ as u64) as usize;
 
-        let cached_chunk = self.chunk_cache.borrow_mut().get(chunk_idx)?;
-        let chunk_rc = Rc::clone(&cached_chunk);
+        let chunk_rc = self.chunk_cache.borrow_mut().get(chunk_idx)?;
 
         // create a reference to the chunk data that lives as long as needed
         // Safety: we will not drop chunk_rc while the reference (and any others derivable from it) are still in use
