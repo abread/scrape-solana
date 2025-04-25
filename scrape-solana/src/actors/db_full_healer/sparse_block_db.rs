@@ -27,6 +27,9 @@ pub struct SparseBlockDb {
     root: PathBuf,
     pending_write_count: Mutex<u64>,
     pending_write_zeroed: Condvar,
+
+    iopool_inflight_count: Mutex<usize>,
+    iopool_spot_available: Condvar,
 }
 
 pub fn recover_blocks_from_db<T: Send>(
@@ -120,6 +123,8 @@ impl SparseBlockDb {
             root,
             pending_write_count: Mutex::new(0),
             pending_write_zeroed: Condvar::new(),
+            iopool_inflight_count: Mutex::new(0),
+            iopool_spot_available: Condvar::new(),
         }
     }
 
@@ -129,7 +134,18 @@ impl SparseBlockDb {
             return; // Block already stored
         }
 
-        *self.pending_write_count.lock().unwrap() += 1;
+        {
+            *self.pending_write_count.lock().unwrap() += 1;
+        }
+
+        // wait for a spot in the IO thread pool
+        {
+            let mut inflight_count = self.iopool_inflight_count.lock().unwrap();
+            while *inflight_count >= IO_THREAD_POOL.current_num_threads() * 2 {
+                inflight_count = self.iopool_spot_available.wait(inflight_count).unwrap();
+            }
+            *inflight_count += 1;
+        }
 
         let this = Arc::clone(self);
         IO_THREAD_POOL.spawn(move || {
@@ -147,11 +163,18 @@ impl SparseBlockDb {
                 .persist(block_path)
                 .expect("failed to persist block");
 
-            let mut pending_write_count = this.pending_write_count.lock().unwrap();
-            *pending_write_count -= 1;
+            {
+                let mut pending_write_count = this.pending_write_count.lock().unwrap();
+                *pending_write_count -= 1;
+                if *pending_write_count == 0 {
+                    this.pending_write_zeroed.notify_all();
+                }
+            }
 
-            if *pending_write_count == 0 {
-                this.pending_write_zeroed.notify_all();
+            {
+                let mut inflight_count = this.iopool_inflight_count.lock().unwrap();
+                *inflight_count -= 1;
+                this.iopool_spot_available.notify_one();
             }
         });
     }
