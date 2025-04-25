@@ -123,6 +123,10 @@ impl<'db, const BCS: usize, const TXCS: usize> BlockIter<'db, BCS, TXCS> {
             return;
         }
 
+        if self.cache.len() > 2 * rayon::current_num_threads() {
+            return; // cache is full, ignore prefetch request
+        }
+
         match self.db.get_block_unchecked(idx) {
             Ok((block_rec, txs)) => {
                 let block_tx = self.block_tx.clone();
