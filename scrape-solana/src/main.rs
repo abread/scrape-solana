@@ -17,6 +17,11 @@ use clap::Parser;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 
+// we fragment memory a lot :/
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[derive(clap::Parser)]
 #[command(name = "scape-solana", version, about, long_about = None)]
 struct App {
