@@ -254,7 +254,9 @@ impl SparseBlockDb {
                             let entry = entry.unwrap();
                             let file_name = entry.file_name();
                             let file_name_str = file_name.to_string_lossy();
-                            u64::from_str_radix(&file_name_str, 16).ok()
+                            file_name_str.strip_prefix("0x").and_then(|file_name_str| {
+                                u64::from_str_radix(file_name_str, 16).ok()
+                            })
                         })
                         .collect::<Vec<_>>()
                 })
