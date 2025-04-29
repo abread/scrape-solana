@@ -82,7 +82,7 @@ fn db_full_healer_actor(
 
                 || match block_db_full_healer_actor(
                     &recovered_blocks,
-                    (start..=middle).rev(),
+                    (start..=middle).rev().step_by(step as usize),
                     &cancel_rx,
                     &api,
                     block_handler_tx,
@@ -105,7 +105,7 @@ fn db_full_healer_actor(
 
                 || match block_db_full_healer_actor(
                     &recovered_blocks,
-                    (middle + step)..=end,
+                    ((middle + step)..=end).step_by(step as usize),
                     &cancel_rx,
                     &api,
                     block_handler_tx,
