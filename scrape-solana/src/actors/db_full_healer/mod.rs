@@ -61,14 +61,19 @@ fn db_full_healer_actor(
     cancel_rx: Receiver<DBFullHealerOperation>,
 ) -> eyre::Result<()> {
     // salvage blocks, filling in gaps
-    let (start, middle, end) = recovered_blocks
+    let (start, _middle, end) = recovered_blocks
         .limits()
         .expect("no blocks were recovered. nothing to save");
 
     let newdb_limits = read_limits(&db_tx)?;
+    let middle = newdb_limits.middle_slot;
 
-    assert_eq!(
-        newdb_limits.middle_slot, middle,
+    assert!(
+        (if middle > _middle {
+            middle - _middle
+        } else {
+            _middle - middle
+        }) <= step,
         "middle slot mismatch between new db and recovered blocks median"
     );
 

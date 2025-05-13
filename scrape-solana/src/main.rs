@@ -466,7 +466,6 @@ fn gap_heal(args: ScrapeArgs) -> eyre::Result<()> {
 fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
     let mut old_db = db::open_no_heal(args.db_root_path.clone(), std::io::stdout())?;
     old_db.assume_max_size_for_heal()?;
-    let middle_slot = old_db.slot_limits()?.middle_slot;
 
     let (cancel_tx, cancel_rx) = std::sync::mpsc::sync_channel(0);
 
@@ -489,19 +488,24 @@ fn full_heal(args: ScrapeArgs) -> eyre::Result<()> {
     println!("checking sharding consistency in recovered blocks");
     recovered_blocks.assert_sharding_consistency(args.shard_config.n, args.shard_config.id);
 
+    let middle_slot = {
+        let slot = recovered_blocks
+            .limits()
+            .expect("no blocks were recovered")
+            .1;
+        let slot_shard = slot % args.shard_config.n;
+        if slot_shard != args.shard_config.id {
+            slot.saturating_sub(slot_shard + args.shard_config.n - args.shard_config.id)
+        } else {
+            slot
+        }
+    };
+
     println!("creating new db");
     let new_path = args.db_root_path.join("full-heal");
     {
-        let mut new_db = db::open_or_create(
-            new_path.to_owned(),
-            || {
-                recovered_blocks
-                    .limits()
-                    .expect("no blocks were recovered!!")
-                    .1
-            },
-            std::io::stdout(),
-        )?;
+        let mut new_db =
+            db::open_or_create(new_path.to_owned(), || middle_slot, std::io::stdout())?;
         new_db.sync()?;
 
         eprintln!(

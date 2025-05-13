@@ -216,14 +216,20 @@ impl SparseBlockDb {
     pub fn assert_sharding_consistency(&self, n: u64, i: u64) {
         let slot_numbers: Vec<u64> = self.slot_numbers();
 
+        let mut ok = true;
         for slot in slot_numbers {
             if slot % n != i {
-                panic!(
+                eprintln!(
                     "Shard ID mismatch: expected {i}, got {} on {:?}",
                     slot % n,
                     self.block_path(slot),
                 );
+                ok = false;
             }
+        }
+
+        if !ok {
+            panic!("Shard ID mismatches found. Aborting.");
         }
     }
 
