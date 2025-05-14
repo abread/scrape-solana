@@ -331,10 +331,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
             .block_records
             .iter()
             .skip(1)
-            .rev()
-            .skip(1)
-            .rev()
-            .filter_map(|maybe_br| maybe_br.ok())
+            .filter_map(|maybe_br| maybe_br.ok().take_if(|br| !br.is_endcap()))
         {
             let counter = slot_diffs
                 .entry((block_record.slot as i128 - last_slot as i128).unsigned_abs() as u64)
@@ -360,7 +357,7 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
                 .block_records
                 .iter()
                 .skip(1)
-                .filter_map(|maybe_br| maybe_br.ok())
+                .filter_map(|maybe_br| maybe_br.ok().take_if(|br| !br.is_endcap()))
             {
                 let residue = block_record.slot % n;
                 let (counter, examples) = residues
