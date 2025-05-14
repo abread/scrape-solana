@@ -335,6 +335,11 @@ where
     vec: &'v HugeVec<T, Store, CHUNK_SZ>,
     len: u64,
     idx: u64,
+
+    /// The chunk in the chunk cache that contains the current index. We keep a reference to it
+    /// to avoid 1) repeatedly looking it up in the chunk cache and 2) having the chunk cache
+    /// garbage collect it mid-iteration.
+    chunk: Option<(usize, Rc<RefCell<CachedChunk<T, CHUNK_SZ>>>)>,
 }
 
 impl<'v, T, Store, const CHUNK_SZ: usize> HugeVecIter<'v, T, Store, CHUNK_SZ>
@@ -347,7 +352,56 @@ where
             vec,
             len: vec.len,
             idx: 0,
+            chunk: None,
         }
+    }
+
+    pub fn nth(&mut self, idx: u64) -> <Self as Iterator>::Item {
+        let chunk_idx = (idx / CHUNK_SZ as u64) as usize;
+        let chunk_offset = (idx % CHUNK_SZ as u64) as usize;
+
+        // grab the chunk for the current index
+        // we cache it in the iterator to keep a live reference to it when garbage collection runs
+        let chunk_rc = match self.chunk.as_ref() {
+            Some((cached_chunk_idx, cached_chunk)) if *cached_chunk_idx == chunk_idx => {
+                cached_chunk.clone()
+            }
+            _ => {
+                let chunk_rc = match self.vec.chunk_cache.borrow_mut().get(chunk_idx) {
+                    Ok(c) => c,
+
+                    // errors are not cloneable, so we just retry every time :/
+                    Err(e) => return Err(HugeVecError::Storage(e)),
+                };
+
+                // cache the chunk for the next iteration
+                self.chunk = Some((chunk_idx, chunk_rc.clone()));
+                chunk_rc
+            }
+        };
+
+        // create a reference to the chunk data that lives as long as needed
+        // Safety: we will not drop chunk_rc while the reference (and any others derivable from it) are still in use
+        let chunk_indef_ref: &'_ RefCell<CachedChunk<T, CHUNK_SZ>> = chunk_rc.deref();
+        let chunk_indef_ref: &'_ RefCell<CachedChunk<T, CHUNK_SZ>> =
+            unsafe { std::mem::transmute(chunk_indef_ref) };
+
+        // chunk may be corrupted
+        {
+            let chunk_len = chunk_indef_ref.borrow().len();
+            if chunk_offset >= chunk_len {
+                return Err(HugeVecError::ChunkCorrupted {
+                    chunk_len,
+                    access_offset: chunk_offset,
+                });
+            }
+        }
+
+        let item_ref = Ref::map(chunk_indef_ref.borrow(), |c| &c[chunk_offset]);
+        Ok(ItemRef {
+            chunk_rc: chunk_rc.clone(),
+            item_ref,
+        })
     }
 }
 
@@ -363,9 +417,11 @@ where
             return None;
         }
 
-        let res = self.vec.get(self.idx);
+        let item = self.nth(self.idx);
+
         self.idx += 1;
-        Some(res)
+
+        Some(item)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -398,9 +454,9 @@ where
             return None;
         }
 
-        let res = self.vec.get(self.len - 1);
+        let item = self.nth(self.len - 1);
         self.len -= 1;
-        Some(res)
+        Some(item)
     }
 }
 
