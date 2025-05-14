@@ -363,19 +363,25 @@ impl<const BCS: usize, const TXCS: usize> MonotonousBlockDb<BCS, TXCS> {
                 .filter_map(|maybe_br| maybe_br.ok())
             {
                 let residue = block_record.slot % n;
-                let counter = residues.entry(residue).or_insert(0);
+                let (counter, examples) = residues
+                    .entry(residue)
+                    .or_insert((0, Vec::with_capacity(5)));
                 *counter += 1;
+
+                if examples.len() < examples.capacity() {
+                    examples.push(block_record.slot);
+                }
             }
 
             let i = residues
                 .iter()
-                .max_by_key(|(_, count)| **count)
+                .max_by_key(|(_, (count, _))| *count)
                 .map(|(i, _)| *i)
                 .unwrap();
             if residues.len() > 1 {
-                for (other_i, count) in residues {
+                for (other_i, (count, examples)) in residues {
                     if other_i != i {
-                        problems.push(format!("inconsistent shard id: {other_i} (present {count} times) is not equal to {i}"));
+                        problems.push(format!("inconsistent shard id: {other_i} (present {count} times) is not equal to {i} (examples: {examples:?})"));
                     }
                 }
             }
